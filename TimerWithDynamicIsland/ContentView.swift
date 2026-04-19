@@ -2,71 +2,52 @@ import SwiftUI
 import ActivityKit
 
 struct ContentView: View {
-  @State private var timer: Timer? = nil
-  @State private var secondsElapsed = 0
-  @State private var isRunning = false
-  @State private var activity: Activity<TimerWidgetAttributes>? = nil
-  
-  var body: some View {
-    VStack {
-      Text("\(secondsElapsed) seconds")
-        .font(.largeTitle)
-      
-      Button(action: {
-        if self.isRunning {
-          self.stopTimer()
-          self.isRunning = false
-        } else {
-          self.startTimer()
-          self.isRunning = true
+    @State private var currentActivity: Activity<TimerWidgetAttributes>? = nil
+    
+    var body: some View {
+        VStack(spacing: 20) {
+            Text("灵动岛歌词器测试").font(.title)
+            
+            Button("启动灵动岛") {
+                startActivity()
+            }
+            .buttonStyle(.borderedProminent)
+            
+            Button("发送下一句测试歌词") {
+                updateActivity()
+            }
+            .buttonStyle(.bordered)
+            .disabled(currentActivity == nil)
+            
+            Button("关闭灵动岛") {
+                stopActivity()
+            }
+            .foregroundColor(.red)
         }
-      }) {
-        Text(isRunning ? "Stop" : "Start")
-          .font(.title)
-      }
     }
-  }
-  
-  private func stopTimer() {
-    self.timer?.invalidate()
-    self.secondsElapsed = 0
-    
-    stopLiveActivity()
-  }
-  
-  private func startTimer() {
-    self.timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-      self.secondsElapsed += 1
-    }
-    
-    startLiveActivity()
-  }
-  
-  private func startLiveActivity() {
-    let attributes = TimerWidgetAttributes(startTime: Date())
-    let initialState = TimerWidgetAttributes.ContentState()
-    let content = ActivityContent(state: initialState,
-                                  staleDate: nil,
-                                  relevanceScore: 0)
-    
-    activity = try? Activity<TimerWidgetAttributes>.request(attributes: attributes, content: content, pushType: nil)
-  }
-  
 
-  private func stopLiveActivity() {
-    let contentState = TimerWidgetAttributes.ContentState()
-    
-    Task {
-      if let activity = self.activity {
-        let content = ActivityContent(state: contentState, staleDate: .now)
-        await activity.end(content, dismissalPolicy: .immediate)
-        self.activity = nil
-      }
+    func startActivity() {
+        let attributes = TimerWidgetAttributes(songName: "七里香")
+        let state = TimerWidgetAttributes.ContentState(lyric: "窗外的麻雀 在电线杆上多嘴")
+        
+        do {
+            currentActivity = try Activity.request(attributes: attributes, contentState: state)
+        } catch {
+            print("启动失败: \(error.localizedDescription)")
+        }
     }
-  }
+
+    func updateActivity() {
+        let newState = TimerWidgetAttributes.ContentState(lyric: "你说这一句 很有夏天的感觉")
+        Task {
+            await currentActivity?.update(using: newState)
+        }
+    }
+
+    func stopActivity() {
+        Task {
+            await currentActivity?.end(dismissalPolicy: .immediate)
+            currentActivity = nil
+        }
+    }
 }
-
-#Preview {
-  ContentView()
-}
-
