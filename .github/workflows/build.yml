@@ -1,0 +1,38 @@
+name: Build iOS IPA
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Build unsigned app
+      run: |
+        xcodebuild clean build \
+          -project TimerWithDynamicIsland.xcodeproj \
+          -scheme TimerWithDynamicIsland \
+          -configuration Release \
+          -sdk iphoneos \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          TARGET_BUILD_DIR="./build"
+
+    - name: Package into IPA
+      run: |
+        mkdir Payload
+        mv ./build/*.app Payload/
+        zip -r TimerApp_Unsigned.ipa Payload
+
+    - name: Upload IPA Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Unsigned_IPA
+        path: TimerApp_Unsigned.ipa
