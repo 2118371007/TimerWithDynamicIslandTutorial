@@ -459,7 +459,7 @@
 				DEVELOPMENT_TEAM = DRY6C57YN8;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = TimerWidget/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = TimerWidget;
+				INFOPLIST_KEY_CFBundleDisplayName = 灵动歌词;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
