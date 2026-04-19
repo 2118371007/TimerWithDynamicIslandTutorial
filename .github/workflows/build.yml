@@ -18,7 +18,7 @@ jobs:
         xcodebuild clean build \
           -project TimerWithDynamicIsland.xcodeproj \
           -scheme TimerWithDynamicIsland \
-          -configuration Release \
+          -configuration Debug \
           -sdk iphoneos \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
