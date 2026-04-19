@@ -15,20 +15,22 @@ jobs:
 
     - name: Build unsigned app
       run: |
+        # 我们用 -derivedDataPath 指定一个缓存目录，不再打乱内部编译路径
         xcodebuild clean build \
           -project TimerWithDynamicIsland.xcodeproj \
           -scheme TimerWithDynamicIsland \
           -configuration Debug \
           -sdk iphoneos \
+          -derivedDataPath ./DerivedData \
           CODE_SIGN_IDENTITY="" \
           CODE_SIGNING_REQUIRED=NO \
-          CODE_SIGNING_ALLOWED=NO \
-          TARGET_BUILD_DIR="./build"
+          CODE_SIGNING_ALLOWED=NO
 
     - name: Package into IPA
       run: |
         mkdir Payload
-        mv ./build/*.app Payload/
+        # 去深层缓存目录里把编译好的 .app 文件捞出来放到 Payload 里
+        mv ./DerivedData/Build/Products/Debug-iphoneos/*.app Payload/
         zip -r TimerApp_Unsigned.ipa Payload
 
     - name: Upload IPA Artifact
