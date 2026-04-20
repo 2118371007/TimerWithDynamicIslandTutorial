@@ -5,37 +5,41 @@ import SwiftUI
 struct TimerWidgetLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: TimerWidgetAttributes.self) { context in
-            // 锁屏界面 (锁屏时的卡片)
+            // ==========================================
+            // 1. 锁屏与通知中心界面
+            // ==========================================
             VStack(spacing: 8) {
-                // 🚨 注意这里：已经全部改成了 context.state.songName
                 Text(context.state.songName)
                     .font(.headline)
-                    .foregroundColor(.white)
+                    .foregroundColor(.white.opacity(0.8)) // 歌名稍微变淡，突出歌词
+                
                 Text(context.state.lyric)
-                    .font(.body)
+                    .font(.title3.bold()) // 锁屏状态下歌词稍微放大加粗
                     .foregroundColor(.green)
                     .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.8)
             }
             .padding()
-            .background(Color.black.opacity(0.8))
+            // 🚨 核心修复：已经删除了原有的黑色背景，现在将完美融入 iOS 系统毛玻璃！
+            
         } dynamicIsland: { context in
             DynamicIsland {
-                // 灵动岛展开状态
+                // ==========================================
+                // 2. 灵动岛长按【展开】状态
+                // ==========================================
                 DynamicIslandExpandedRegion(.leading) {
-                    // 左侧加一个音乐图标，不再空荡荡
-                    Image(systemName: "opticaldisc")
+                    Image(systemName: "opticaldisc.fill")
                         .foregroundColor(.blue)
                         .font(.title2)
                         .padding(.top, 8)
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    // 顶部居中显示歌名
                     Text(context.state.songName)
                         .font(.headline)
                         .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
-                    // 底部专门留给歌词，居中显示，超长自动缩小
                     Text(context.state.lyric)
                         .font(.title3)
                         .foregroundColor(.green)
@@ -46,15 +50,26 @@ struct TimerWidgetLiveActivity: Widget {
                         .padding(.horizontal, 10)
                 }
             } compactLeading: {
-                // 灵动岛缩小状态（左侧小图标）
+                // ==========================================
+                // 3. 灵动岛【收缩】状态（左侧）
+                // ==========================================
                 Image(systemName: "music.note")
                     .foregroundColor(.blue)
             } compactTrailing: {
-                // 灵动岛缩小状态（右侧跳动音符）
-                Text("🎵")
+                // ==========================================
+                // 4. 灵动岛【收缩】状态（右侧）- 🚨 见缝插针黑科技！
+                // ==========================================
+                Text(context.state.lyric)
+                    .font(.system(size: 11, weight: .medium)) // 必须极小才能塞进胶囊
+                    .foregroundColor(.green)
+                    .frame(maxWidth: 120, alignment: .trailing) // 限制宽度防止把岛撑破
+                    .lineLimit(1)
             } minimal: {
-                // 极简状态
+                // ==========================================
+                // 5. 极简状态（当同时有导航、录音等多个任务抢占灵动岛时）
+                // ==========================================
                 Image(systemName: "music.note")
+                    .foregroundColor(.green)
             }
         }
     }
