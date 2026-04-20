@@ -1,53 +1,30 @@
 import SwiftUI
-import ActivityKit
 
 struct ContentView: View {
-    @State private var currentActivity: Activity<TimerWidgetAttributes>? = nil
+    @State private var isMonitoring = false
     
     var body: some View {
-        VStack(spacing: 20) {
-            Text("灵动岛歌词器测试").font(.title)
+        VStack(spacing: 40) {
+            Image(systemName: isMonitoring ? "waveform.circle.fill" : "waveform.circle")
+                .resizable()
+                .frame(width: 100, height: 100)
+                .foregroundColor(isMonitoring ? .green : .gray)
             
-            Button("启动灵动岛") {
-                startActivity()
-            }
-            .buttonStyle(.borderedProminent)
-            
-            Button("发送下一句测试歌词") {
-                updateActivity()
-            }
-            .buttonStyle(.bordered)
-            .disabled(currentActivity == nil)
-            
-            Button("关闭灵动岛") {
-                stopActivity()
-            }
-            .foregroundColor(.red)
-        }
-    }
+            Text(isMonitoring ? "正在同步 Apple Music..." : "歌词同步已关闭")
+                .font(.headline)
 
-    func startActivity() {
-        let attributes = TimerWidgetAttributes(songName: "七里香")
-        let state = TimerWidgetAttributes.ContentState(lyric: "窗外的麻雀 在电线杆上多嘴")
-        
-        do {
-            currentActivity = try Activity.request(attributes: attributes, contentState: state)
-        } catch {
-            print("启动失败: \(error.localizedDescription)")
-        }
-    }
-
-    func updateActivity() {
-        let newState = TimerWidgetAttributes.ContentState(lyric: "你说这一句 很有夏天的感觉")
-        Task {
-            await currentActivity?.update(using: newState)
-        }
-    }
-
-    func stopActivity() {
-        Task {
-            await currentActivity?.end(dismissalPolicy: .immediate)
-            currentActivity = nil
+            Button(action: {
+                isMonitoring.toggle()
+                if isMonitoring {
+                    MusicManager.shared.setupMonitoring()
+                }
+            }) {
+                Text(isMonitoring ? "停止同步" : "开启同步")
+                    .padding()
+                    .background(isMonitoring ? Color.red : Color.blue)
+                    .foregroundColor(.white)
+                    .cornerRadius(10)
+            }
         }
     }
 }

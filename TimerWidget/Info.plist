@@ -10,5 +10,7 @@
         <key>NSExtensionPointIdentifier</key>
         <string>com.apple.widgetkit-extension</string>
     </dict>
+    <key>NSAppleMusicUsageDescription</key>
+	<string>需要访问音乐播放信息以同步灵动岛歌词</string>
 </dict>
 </plist>
