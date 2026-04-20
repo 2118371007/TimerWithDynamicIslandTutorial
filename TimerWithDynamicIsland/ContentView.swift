@@ -9,7 +9,7 @@ struct LyricLine {
 }
 
 // ==========================================
-// UI 界面
+// UI 界面 (保持你喜欢的居中排版不变)
 // ==========================================
 struct ContentView: View {
     @State private var isMonitoring = false
@@ -24,7 +24,7 @@ struct ContentView: View {
                 .foregroundColor(isMonitoring ? .green : .gray)
                 .shadow(color: isMonitoring ? .green.opacity(0.5) : .clear, radius: 10)
             
-            Text(isMonitoring ? "双引擎智能搜词已启动" : "歌词同步已关闭")
+            Text(isMonitoring ? "酷狗搜词引擎已启动" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -58,7 +58,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 核心引擎 (双引擎爬虫 + 暂停监控)
+// 核心引擎 (酷狗 API + 智能暂停监控)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -120,22 +120,15 @@ class MusicManager: ObservableObject {
         parsedLyrics = []
         currentLyricIndex = -1
         
-        updateIsland(songName: title, lyric: "🎵 双引擎全网搜词中...")
+        updateIsland(songName: title, lyric: "🎵 酷狗全网搜词中...")
         
-        // 🚨 核心：双引擎自动切换逻辑
         Task {
-            // 1. 优先尝试 QQ 音乐 (保周杰伦)
-            var lrcString = await fetchLyricFromQQMusic(title: title)
-            
-            // 2. 如果 QQ 音乐被墙或搜不到，瞬间无缝切换到网易云
-            if lrcString.isEmpty {
-                lrcString = await fetchLyricFromNetEase(title: title, artist: artist)
-            }
-            
+            // 直接呼叫酷狗 API，传歌名和歌手以保证100%精确度
+            let lrcString = await fetchLyricFromKugou(title: title, artist: artist)
             self.parsedLyrics = self.parseLRC(lrcString: lrcString)
             
             if self.parsedLyrics.isEmpty {
-                self.updateIsland(songName: title, lyric: "❌ 网络限制或无版权")
+                self.updateIsland(songName: title, lyric: "❌ 未找到滚动歌词")
             } else {
                 DispatchQueue.main.async {
                     self.startLyricSyncTimer(songName: title)
@@ -167,92 +160,43 @@ class MusicManager: ObservableObject {
     }
 
     // ==========================================
-    // 引擎 1：QQ音乐 (带强力清洗器)
+    // 🚨 全新酷狗音乐 API (纯净无加密，支持周杰伦)
     // ==========================================
-    func fetchLyricFromQQMusic(title: String) async -> String {
-        // 修复1：只搜歌名，防匹配失败
-        let keyword = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
-        let searchUrlString = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(keyword)&format=json&platform=yqq.json"
+    func fetchLyricFromKugou(title: String, artist: String) async -> String {
+        // 1. 先用关键字搜出这首歌的专属 Hash 码
+        let keyword = "\(title) \(artist)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
+        let searchUrlString = "https://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(keyword)&page=1&pagesize=1"
         
         guard let searchUrl = URL(string: searchUrlString) else { return "" }
         
         do {
             var request = URLRequest(url: searchUrl)
-            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
             
             let (searchData, _) = try await URLSession.shared.data(for: request)
             
-            // 修复2：暴力切除 callback 脏数据
-            var searchString = String(data: searchData, encoding: .utf8) ?? ""
-            if let start = searchString.firstIndex(of: "{"), let end = searchString.lastIndex(of: "}") {
-                searchString = String(searchString[start...end])
-            }
-            
-            guard let cleanData = searchString.data(using: .utf8),
-                  let searchJson = try JSONSerialization.jsonObject(with: cleanData) as? [String: Any],
-                  let dataMap = searchJson["data"] as? [String: Any],
-                  let songMap = dataMap["song"] as? [String: Any],
-                  let listArray = songMap["list"] as? [[String: Any]],
-                  let firstSong = listArray.first,
-                  let songmid = firstSong["songmid"] as? String else { return "" }
-            
-            let lyricUrlString = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json&platform=yqq.json&nobase64=0"
-            var lyricReq = URLRequest(url: URL(string: lyricUrlString)!)
-            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer")
-            lyricReq.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-            
-            let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
-            
-            var lyricString = String(data: lyricData, encoding: .utf8) ?? ""
-            if let start = lyricString.firstIndex(of: "{"), let end = lyricString.lastIndex(of: "}") {
-                lyricString = String(lyricString[start...end])
-            }
-            
-            guard let cleanLyricData = lyricString.data(using: .utf8),
-                  let lyricJson = try JSONSerialization.jsonObject(with: cleanLyricData) as? [String: Any],
-                  let lyricBase64 = lyricJson["lyric"] as? String,
-                  let decodedData = Data(base64Encoded: lyricBase64),
-                  let lyricText = String(data: decodedData, encoding: .utf8) else { return "" }
-            
-            return lyricText
-        } catch {
-            return ""
-        }
-    }
-
-    // ==========================================
-    // 引擎 2：网易云备用 (防海外封锁)
-    // ==========================================
-    func fetchLyricFromNetEase(title: String, artist: String) async -> String {
-        let searchTerm = "\(title) \(artist)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
-        let searchUrlString = "https://music.163.com/api/search/get/web?s=\(searchTerm)&type=1&limit=1"
-        
-        guard let searchUrl = URL(string: searchUrlString) else { return "" }
-        
-        do {
-            var request = URLRequest(url: searchUrl)
-            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
-            
-            let (searchData, _) = try await URLSession.shared.data(for: request)
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
-                  let result = searchJson["result"] as? [String: Any],
-                  let songs = result["songs"] as? [[String: Any]],
-                  let firstSong = songs.first,
-                  let songId = firstSong["id"] as? Int else { return "" }
+                  let dataMap = searchJson["data"] as? [String: Any],
+                  let infoArray = dataMap["info"] as? [[String: Any]],
+                  let firstSong = infoArray.first,
+                  let hash = firstSong["hash"] as? String else { return "" }
             
-            let lyricUrlString = "https://music.163.com/api/song/lyric?id=\(songId)&lv=1&kv=1&tv=-1"
-            let (lyricData, _) = try await URLSession.shared.data(from: URL(string: lyricUrlString)!)
+            // 2. 拿着 Hash 码去拿歌词，cmd=100 会直接返回完美的纯文本 LRC
+            let lyricUrlString = "https://m.kugou.com/app/i/krc.php?cmd=100&hash=\(hash)&timelength=300000"
+            guard let lyricUrl = URL(string: lyricUrlString) else { return "" }
             
-            guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
-                  let lrc = lyricJson["lrc"] as? [String: Any],
-                  let lyricText = lrc["lyric"] as? String else { return "" }
+            let (lyricData, _) = try await URLSession.shared.data(from: lyricUrl)
             
+            // 酷狗直接给 UTF-8 文本，不需要任何解密和 Base64！
+            let lyricText = String(data: lyricData, encoding: .utf8) ?? ""
             return lyricText
+            
         } catch {
             return ""
         }
     }
 
+    // 标准 LRC 解析器
     func parseLRC(lrcString: String) -> [LyricLine] {
         var lines: [LyricLine] = []
         let components = lrcString.components(separatedBy: .newlines)
@@ -268,9 +212,7 @@ class MusicManager: ObservableObject {
                     let min = Double(line[minRange]) ?? 0
                     let sec = Double(line[secRange]) ?? 0
                     let text = String(line[textRange])
-                        .replacingOccurrences(of: "&#32;", with: " ")
-                        .replacingOccurrences(of: "&#40;", with: "(")
-                        .replacingOccurrences(of: "&#41;", with: ")")
+                        .replacingOccurrences(of: "\r", with: "")
                         .trimmingCharacters(in: .whitespaces)
                     lines.append(LyricLine(time: (min * 60) + sec, text: text))
                 }
