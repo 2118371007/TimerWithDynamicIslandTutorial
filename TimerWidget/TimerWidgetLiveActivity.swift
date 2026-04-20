@@ -5,37 +5,56 @@ import SwiftUI
 struct TimerWidgetLiveActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: TimerWidgetAttributes.self) { context in
-            // 1. 锁屏界面的样式（灵动岛不展开时的底部通知）
-            VStack {
-                Text(context.attributes.songName).font(.caption).foregroundColor(.secondary)
-                Text(context.state.lyric).font(.headline)
+            // 锁屏界面 (锁屏时的卡片)
+            VStack(spacing: 8) {
+                // 🚨 注意这里：已经全部改成了 context.state.songName
+                Text(context.state.songName)
+                    .font(.headline)
+                    .foregroundColor(.white)
+                Text(context.state.lyric)
+                    .font(.body)
+                    .foregroundColor(.green)
+                    .multilineTextAlignment(.center)
             }
             .padding()
-
+            .background(Color.black.opacity(0.8))
         } dynamicIsland: { context in
             DynamicIsland {
-                // 2. 灵动岛长按展开后的完整界面
+                // 灵动岛展开状态
                 DynamicIslandExpandedRegion(.leading) {
-                    Text("🎵").font(.title2)
+                    // 左侧加一个音乐图标，不再空荡荡
+                    Image(systemName: "opticaldisc")
+                        .foregroundColor(.blue)
+                        .font(.title2)
+                        .padding(.top, 8)
                 }
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.attributes.songName).font(.caption).foregroundColor(.secondary)
+                DynamicIslandExpandedRegion(.center) {
+                    // 顶部居中显示歌名
+                    Text(context.state.songName)
+                        .font(.headline)
+                        .lineLimit(1)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
+                    // 底部专门留给歌词，居中显示，超长自动缩小
                     Text(context.state.lyric)
                         .font(.title3)
-                        .lineLimit(1)
-                        .padding(.top, 5)
+                        .foregroundColor(.green)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.6)
+                        .padding(.bottom, 8)
+                        .padding(.horizontal, 10)
                 }
             } compactLeading: {
-                // 3. 灵动岛左侧紧凑态（显示个图标）
-                Text("🎵")
+                // 灵动岛缩小状态（左侧小图标）
+                Image(systemName: "music.note")
+                    .foregroundColor(.blue)
             } compactTrailing: {
-                // 4. 灵动岛右侧紧凑态（显示当前歌词摘要）
-                Text(context.state.lyric).font(.caption2)
-            } minimal: {
-                // 5. 独立态（当有多个灵动岛时显示的小圆点）
+                // 灵动岛缩小状态（右侧跳动音符）
                 Text("🎵")
+            } minimal: {
+                // 极简状态
+                Image(systemName: "music.note")
             }
         }
     }
