@@ -1,12 +1,10 @@
-import Foundation
 import ActivityKit
+import Foundation
 
 struct TimerWidgetAttributes: ActivityAttributes {
+    // 动态状态：把 songName 和 lyric 都放在这里，切歌才能无缝刷新
     public struct ContentState: Codable, Hashable {
-        // 这里定义了灵动岛实时更新的数据：当前这行歌词
+        var songName: String
         var lyric: String
     }
-
-    // 这里定义了灵动岛固定不变的数据：歌名
-    var songName: String
 }
