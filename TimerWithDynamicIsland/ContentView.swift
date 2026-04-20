@@ -24,7 +24,7 @@ struct ContentView: View {
                 .foregroundColor(isMonitoring ? .green : .gray)
                 .shadow(color: isMonitoring ? .green.opacity(0.5) : .clear, radius: 10)
             
-            Text(isMonitoring ? "QQ音乐引擎已启动" : "歌词同步已关闭")
+            Text(isMonitoring ? "双引擎智能搜词已启动" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -58,7 +58,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 核心引擎 (QQ音乐爬虫 + 暂停监控)
+// 核心引擎 (双引擎爬虫 + 暂停监控)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -89,29 +89,20 @@ class MusicManager: ObservableObject {
     
     private func startListening() {
         musicPlayer.beginGeneratingPlaybackNotifications()
-        // 监听切歌
         NotificationCenter.default.addObserver(self, selector: #selector(handleTrackChange), name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: nil)
-        // 🚨 新增：监听暂停/播放状态
         NotificationCenter.default.addObserver(self, selector: #selector(handlePlaybackStateChange), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: nil)
-        
         handleTrackChange()
     }
     
-    // 🚨 暂停/播放 智能检测
     @objc func handlePlaybackStateChange() {
         if musicPlayer.playbackState == .paused || musicPlayer.playbackState == .stopped {
-            // 暂停时：只关岛，不关监听
             closeIslandOnly()
         } else if musicPlayer.playbackState == .playing {
-            // 恢复播放时：重新上岛
-            if currentActivity == nil {
-                handleTrackChange()
-            }
+            if currentActivity == nil { handleTrackChange() }
         }
     }
 
     @objc func handleTrackChange() {
-        // 如果正在暂停，不处理
         if musicPlayer.playbackState == .paused { return }
         
         guard let nowPlaying = musicPlayer.nowPlayingItem else {
@@ -129,15 +120,22 @@ class MusicManager: ObservableObject {
         parsedLyrics = []
         currentLyricIndex = -1
         
-        updateIsland(songName: title, lyric: "🎵 QQ音乐全网搜词中...")
+        updateIsland(songName: title, lyric: "🎵 双引擎全网搜词中...")
         
-        // 调用 QQ 音乐接口
+        // 🚨 核心：双引擎自动切换逻辑
         Task {
-            let lrcString = await fetchLyricFromQQMusic(title: title, artist: artist)
+            // 1. 优先尝试 QQ 音乐 (保周杰伦)
+            var lrcString = await fetchLyricFromQQMusic(title: title)
+            
+            // 2. 如果 QQ 音乐被墙或搜不到，瞬间无缝切换到网易云
+            if lrcString.isEmpty {
+                lrcString = await fetchLyricFromNetEase(title: title, artist: artist)
+            }
+            
             self.parsedLyrics = self.parseLRC(lrcString: lrcString)
             
             if self.parsedLyrics.isEmpty {
-                self.updateIsland(songName: title, lyric: "❌ 未找到滚动歌词")
+                self.updateIsland(songName: title, lyric: "❌ 网络限制或无版权")
             } else {
                 DispatchQueue.main.async {
                     self.startLyricSyncTimer(songName: title)
@@ -168,31 +166,50 @@ class MusicManager: ObservableObject {
         }
     }
 
-    // 🚨 QQ 音乐 API 黑科技爬虫
-    func fetchLyricFromQQMusic(title: String, artist: String) async -> String {
-        let keyword = "\(title) \(artist)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
-        let searchUrlString = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(keyword)&format=json"
+    // ==========================================
+    // 引擎 1：QQ音乐 (带强力清洗器)
+    // ==========================================
+    func fetchLyricFromQQMusic(title: String) async -> String {
+        // 修复1：只搜歌名，防匹配失败
+        let keyword = title.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
+        let searchUrlString = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(keyword)&format=json&platform=yqq.json"
         
         guard let searchUrl = URL(string: searchUrlString) else { return "" }
         
         do {
-            // 1. 搜歌名，拿 songmid
-            let (searchData, _) = try await URLSession.shared.data(from: searchUrl)
-            guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
+            var request = URLRequest(url: searchUrl)
+            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            
+            let (searchData, _) = try await URLSession.shared.data(for: request)
+            
+            // 修复2：暴力切除 callback 脏数据
+            var searchString = String(data: searchData, encoding: .utf8) ?? ""
+            if let start = searchString.firstIndex(of: "{"), let end = searchString.lastIndex(of: "}") {
+                searchString = String(searchString[start...end])
+            }
+            
+            guard let cleanData = searchString.data(using: .utf8),
+                  let searchJson = try JSONSerialization.jsonObject(with: cleanData) as? [String: Any],
                   let dataMap = searchJson["data"] as? [String: Any],
                   let songMap = dataMap["song"] as? [String: Any],
                   let listArray = songMap["list"] as? [[String: Any]],
                   let firstSong = listArray.first,
                   let songmid = firstSong["songmid"] as? String else { return "" }
             
-            // 2. 拿着 songmid 强刷歌词接口
-            let lyricUrlString = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json"
-            var request = URLRequest(url: URL(string: lyricUrlString)!)
-            // QQ音乐接口防盗链核心：必须伪装 Referer
-            request.setValue("https://y.qq.com", forHTTPHeaderField: "Referer")
+            let lyricUrlString = "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json&platform=yqq.json&nobase64=0"
+            var lyricReq = URLRequest(url: URL(string: lyricUrlString)!)
+            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer")
+            lyricReq.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             
-            let (lyricData, _) = try await URLSession.shared.data(for: request)
-            guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
+            let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
+            
+            var lyricString = String(data: lyricData, encoding: .utf8) ?? ""
+            if let start = lyricString.firstIndex(of: "{"), let end = lyricString.lastIndex(of: "}") {
+                lyricString = String(lyricString[start...end])
+            }
+            
+            guard let cleanLyricData = lyricString.data(using: .utf8),
+                  let lyricJson = try JSONSerialization.jsonObject(with: cleanLyricData) as? [String: Any],
                   let lyricBase64 = lyricJson["lyric"] as? String,
                   let decodedData = Data(base64Encoded: lyricBase64),
                   let lyricText = String(data: decodedData, encoding: .utf8) else { return "" }
@@ -203,10 +220,42 @@ class MusicManager: ObservableObject {
         }
     }
 
+    // ==========================================
+    // 引擎 2：网易云备用 (防海外封锁)
+    // ==========================================
+    func fetchLyricFromNetEase(title: String, artist: String) async -> String {
+        let searchTerm = "\(title) \(artist)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? title
+        let searchUrlString = "https://music.163.com/api/search/get/web?s=\(searchTerm)&type=1&limit=1"
+        
+        guard let searchUrl = URL(string: searchUrlString) else { return "" }
+        
+        do {
+            var request = URLRequest(url: searchUrl)
+            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            
+            let (searchData, _) = try await URLSession.shared.data(for: request)
+            guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
+                  let result = searchJson["result"] as? [String: Any],
+                  let songs = result["songs"] as? [[String: Any]],
+                  let firstSong = songs.first,
+                  let songId = firstSong["id"] as? Int else { return "" }
+            
+            let lyricUrlString = "https://music.163.com/api/song/lyric?id=\(songId)&lv=1&kv=1&tv=-1"
+            let (lyricData, _) = try await URLSession.shared.data(from: URL(string: lyricUrlString)!)
+            
+            guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
+                  let lrc = lyricJson["lrc"] as? [String: Any],
+                  let lyricText = lrc["lyric"] as? String else { return "" }
+            
+            return lyricText
+        } catch {
+            return ""
+        }
+    }
+
     func parseLRC(lrcString: String) -> [LyricLine] {
         var lines: [LyricLine] = []
         let components = lrcString.components(separatedBy: .newlines)
-        // 兼容 [00:00.00] 或 [00:00.000] 格式
         let pattern = "\\[(\\d{2,}):(\\d{2}\\.\\d{2,3})\\](.*)"
         guard let regex = try? NSRegularExpression(pattern: pattern) else { return lines }
         
@@ -219,7 +268,9 @@ class MusicManager: ObservableObject {
                     let min = Double(line[minRange]) ?? 0
                     let sec = Double(line[secRange]) ?? 0
                     let text = String(line[textRange])
-                        .replacingOccurrences(of: "&#32;", with: " ") // 处理QQ音乐特有的空格转义
+                        .replacingOccurrences(of: "&#32;", with: " ")
+                        .replacingOccurrences(of: "&#40;", with: "(")
+                        .replacingOccurrences(of: "&#41;", with: ")")
                         .trimmingCharacters(in: .whitespaces)
                     lines.append(LyricLine(time: (min * 60) + sec, text: text))
                 }
@@ -228,25 +279,20 @@ class MusicManager: ObservableObject {
         return lines.sorted { $0.time < $1.time }
     }
 
-    // 🚨 终极丝滑更新：永远不再强制杀进程，全部无缝 Update！
     func updateIsland(songName: String, lyric: String) {
         let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric)
-        
         Task {
             if currentActivity == nil {
                 do {
                     currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
-                    DispatchQueue.main.async { self.errorMessage = "✅ 正在同步：\(songName)" }
-                } catch {
-                    DispatchQueue.main.async { self.errorMessage = "❌ 灵动岛故障: \(error.localizedDescription)" }
-                }
+                    DispatchQueue.main.async { self.errorMessage = "✅ 同步中：\(songName)" }
+                } catch {}
             } else {
                 await currentActivity?.update(using: state)
             }
         }
     }
     
-    // 只关岛，保留后台监听（用于暂停时）
     func closeIslandOnly() {
         lyricTimer?.invalidate()
         Task {
@@ -255,7 +301,6 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 彻底杀掉所有功能（用于点 App 里的停止按钮）
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         NotificationCenter.default.removeObserver(self)
