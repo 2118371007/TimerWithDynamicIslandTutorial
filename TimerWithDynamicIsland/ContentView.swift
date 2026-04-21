@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "纯净不死引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "双核不死幻彩引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -59,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (去除看门狗自杀逻辑 + 引擎自愈)
+// 2. 核心大心脏
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -80,14 +80,18 @@ class MusicManager: ObservableObject {
     private let silencePlayer = AVAudioPlayerNode()
 
     func setupMonitoring() {
-        self.errorMessage = "正在启动纯净引擎..."
+        self.errorMessage = "正在唤醒系统底层通讯..."
         purgeOrphanedActivities()
         configureAudioSession()
+        
+        // 🚨 核心修复：强制唤醒 iOS 底层音乐进程通讯 (IPC)
+        // 没有这句，App 退后台后 nowPlayingItem 就成了死水一潭！
+        musicPlayer.beginGeneratingPlaybackNotifications()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 引擎启动，脱离系统看门狗！"
+                    self.errorMessage = "✅ 引擎启动，切歌秒级响应！"
                     self.startMasterLoop()
                 } else {
                     self.errorMessage = "❌ 被拒绝访问 Apple Music"
@@ -105,7 +109,6 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 🚨 纯净白噪音引擎 + 自愈机制
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
@@ -129,7 +132,6 @@ class MusicManager: ObservableObject {
                 silencePlayer.play()
             }
             
-            // 🚨 音频自愈：如果接电话导致引擎被挂起，电话打完自动重启
             NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
                 guard let self = self,
                       let userInfo = notification.userInfo,
@@ -153,6 +155,7 @@ class MusicManager: ObservableObject {
         
         masterLoopTask = Task {
             while !Task.isCancelled {
+                // 因为有了 beginGeneratingPlaybackNotifications，这里的数据终于能在后台实时更新了！
                 let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
                 let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
                 let isPlaying = (self.musicPlayer.playbackState == .playing)
@@ -207,8 +210,13 @@ class MusicManager: ObservableObject {
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
+        // 🚨 双核搜词系统：QQ 不行就上酷狗，确保 100% 抓到
         var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
+        
+        if lrcString.isEmpty {
+            lrcString = await fetchLyricFromKugou(keyword: cleanTitle)
+        }
         
         self.parsedLyrics = self.parseLRC(lrcString: lrcString)
         
@@ -217,15 +225,14 @@ class MusicManager: ObservableObject {
         }
     }
 
+    // 引擎 1：QQ音乐
     func fetchLyricFromQQMusic(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(encoded)&format=json")!
-        
         do {
             var request = URLRequest(url: searchUrl)
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let (searchData, _) = try await URLSession.shared.data(for: request)
-            
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
                   let dataMap = searchJson["data"] as? [String: Any],
                   let songMap = dataMap["song"] as? [String: Any],
@@ -236,14 +243,31 @@ class MusicManager: ObservableObject {
             let lyricUrl = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json")!
             var lyricReq = URLRequest(url: lyricUrl)
             lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer") 
-            
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
                   let lyricB64 = lyricJson["lyric"] as? String,
                   let decodedData = Data(base64Encoded: lyricB64),
                   let lyricText = String(data: decodedData, encoding: .utf8) else { return "" }
-            
             return lyricText
+        } catch { return "" }
+    }
+
+    // 引擎 2：酷狗音乐保底
+    func fetchLyricFromKugou(keyword: String) async -> String {
+        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
+        let searchUrl = URL(string: "https://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(encoded)&page=1&pagesize=1")!
+        do {
+            var request = URLRequest(url: searchUrl)
+            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            let (searchData, _) = try await URLSession.shared.data(for: request)
+            guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
+                  let dataMap = searchJson["data"] as? [String: Any],
+                  let infoArray = dataMap["info"] as? [[String: Any]],
+                  let hash = infoArray.first?["hash"] as? String else { return "" }
+            
+            let lyricUrl = URL(string: "https://m.kugou.com/app/i/krc.php?cmd=100&hash=\(hash)&timelength=999999")!
+            let (lyricData, _) = try await URLSession.shared.data(from: lyricUrl)
+            return String(data: lyricData, encoding: .utf8) ?? ""
         } catch { return "" }
     }
 
@@ -303,6 +327,8 @@ class MusicManager: ObservableObject {
     }
     
     func stopEverything() {
+        // 🚨 关闭唤醒
+        musicPlayer.endGeneratingPlaybackNotifications()
         masterLoopTask?.cancel()
         if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
         currentSongName = ""
