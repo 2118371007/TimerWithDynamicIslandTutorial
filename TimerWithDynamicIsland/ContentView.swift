@@ -22,10 +22,11 @@ struct ContentView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
-                .foregroundColor(isMonitoring ? .green : .gray)
-                .shadow(color: isMonitoring ? .green.opacity(0.5) : .clear, radius: 10)
+                // 界面图标也跟着当前封面颜色变！
+                .foregroundColor(Color(hex: musicManager.currentThemeColor))
+                .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "后台免死金牌已激活" : "歌词同步已关闭")
+            Text(isMonitoring ? "智能幻彩引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -36,11 +37,11 @@ struct ContentView: View {
                     musicManager.stopEverything()
                 }
             }) {
-                Text(isMonitoring ? "🛑 彻底停止并关闭" : "🚀 开启不死同步")
+                Text(isMonitoring ? "🛑 彻底停止并关闭" : "🚀 开启幻彩同步")
                     .font(.title3.bold())
                     .padding()
                     .frame(maxWidth: .infinity)
-                    .background(isMonitoring ? Color.red : Color.blue)
+                    .background(isMonitoring ? Color.red : Color(hex: musicManager.currentThemeColor))
                     .foregroundColor(.white)
                     .cornerRadius(15)
                     .padding(.horizontal, 40)
@@ -59,7 +60,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心引擎 (加强保活版)
+// 2. 核心大心脏 (MusicManager)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -68,45 +69,39 @@ class MusicManager: ObservableObject {
     private var currentActivity: Activity<TimerWidgetAttributes>? = nil
     
     @Published var errorMessage: String = ""
+    @Published var currentThemeColor: String = "#34C759" // 默认 iOS 绿
     
     private var parsedLyrics: [LyricLine] = []
     private var lyricTimer: Timer?
     private var currentLyricIndex = -1
     private var currentSongName = ""
     
-    // 🚨 增强保活所需组件
     private let silenceEngine = AVAudioEngine()
     private let silencePlayer = AVAudioPlayerNode()
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     func setupMonitoring() {
-        self.errorMessage = "正在注入保活驱动..."
-        
-        // 1. 激活后台音频 Session
+        self.errorMessage = "正在启动引擎..."
         configureAudioSession()
-        
-        // 2. 申请系统后台任务令牌
         renewBackgroundTask()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 不死模式已就绪！"
+                    self.errorMessage = "✅ 监听中，退后台绝对不掉线！"
                     self.startListening()
                 } else {
-                    self.errorMessage = "❌ 权限被拒"
+                    self.errorMessage = "❌ 被拒绝访问 Apple Music"
                 }
             }
         }
     }
     
-    // 🚨 核心逻辑：配置音频 Session 为最高优先级后台播放
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            // 启动静音播放
             silenceEngine.attach(silencePlayer)
             let format = silenceEngine.outputNode.inputFormat(forBus: 0)
             silenceEngine.connect(silencePlayer, to: silenceEngine.outputNode, format: format)
@@ -120,13 +115,9 @@ class MusicManager: ObservableObject {
         } catch { print("音频引擎故障") }
     }
     
-    // 🚨 核心逻辑：申请后台无限时间
     private func renewBackgroundTask() {
-        if backgroundTask != .invalid {
-            UIApplication.shared.endBackgroundTask(backgroundTask)
-        }
+        if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "LyricKeepAlive") {
-            // 当系统快要杀掉 App 时，再次尝试重新申请（垂死挣扎）
             self.renewBackgroundTask()
         }
     }
@@ -147,6 +138,14 @@ class MusicManager: ObservableObject {
         let artist = musicPlayer.nowPlayingItem?.artist ?? ""
         let isPlaying = (musicPlayer.playbackState == .playing)
         
+        // 🚨 色彩提取：抓取当前音乐的封面并算出平均色！
+        if let artwork = musicPlayer.nowPlayingItem?.artwork,
+           let image = artwork.image(at: CGSize(width: 50, height: 50)) {
+            self.currentThemeColor = image.averageColorHex() ?? "#34C759"
+        } else {
+            self.currentThemeColor = "#34C759"
+        }
+        
         if !rawTitle.isEmpty && rawTitle != currentSongName {
             self.currentSongName = rawTitle
             self.fetchAndStart(title: rawTitle, artist: artist)
@@ -157,7 +156,7 @@ class MusicManager: ObservableObject {
             if !parsedLyrics.isEmpty { startLyricSyncTimer(songName: rawTitle) }
         } else {
             lyricTimer?.invalidate()
-            if !rawTitle.isEmpty { updateIsland(songName: rawTitle, lyric: "⏸ 已暂停") }
+            if !rawTitle.isEmpty { updateIsland(songName: rawTitle, lyric: "⏸ 已暂停播放") }
         }
     }
 
@@ -165,7 +164,7 @@ class MusicManager: ObservableObject {
         lyricTimer?.invalidate()
         parsedLyrics = []
         currentLyricIndex = -1
-        updateIsland(songName: title, lyric: "🎵 正在搜词...")
+        updateIsland(songName: title, lyric: "🎵 秒速匹配中...")
         
         var cleanTitle = title
         if let idx = cleanTitle.firstIndex(of: "(") { cleanTitle = String(cleanTitle[..<idx]) }
@@ -173,20 +172,28 @@ class MusicManager: ObservableObject {
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
         Task {
-            let lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
+            var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
+            if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
+            
             self.parsedLyrics = self.parseLRC(lrcString: lrcString)
+            
             DispatchQueue.main.async {
-                if self.musicPlayer.playbackState == .playing { self.startLyricSyncTimer(songName: title) }
+                if self.parsedLyrics.isEmpty {
+                    self.updateIsland(songName: title, lyric: "❌ 无滚动歌词")
+                } else {
+                    if self.musicPlayer.playbackState == .playing {
+                        self.startLyricSyncTimer(songName: title)
+                    }
+                }
             }
         }
     }
 
     func startLyricSyncTimer(songName: String) {
         lyricTimer?.invalidate()
-        // 🚨 使用 RunLoop.common 模式，防止 App 在后台时 Timer 被降频
-        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            let currentTime = self.musicPlayer.currentPlaybackTime + 0.45
+            let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
             if currentTime.isNaN { return }
             
             var newIndex = -1
@@ -197,7 +204,9 @@ class MusicManager: ObservableObject {
             if newIndex != self.currentLyricIndex && newIndex >= 0 {
                 self.currentLyricIndex = newIndex
                 let currentText = self.parsedLyrics[newIndex].text
-                self.updateIsland(songName: songName, lyric: currentText)
+                if !currentText.isEmpty {
+                    self.updateIsland(songName: songName, lyric: currentText)
+                }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -207,21 +216,30 @@ class MusicManager: ObservableObject {
     func fetchLyricFromQQMusic(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(encoded)&format=json")!
+        
         do {
-            let (searchData, _) = try await URLSession.shared.data(from: searchUrl)
-            guard let json = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
-                  let song = (json["data"] as? [String: Any])?["song"] as? [String: Any],
-                  let first = (song["list"] as? [[String: Any]])?.first,
+            var request = URLRequest(url: searchUrl)
+            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            let (searchData, _) = try await URLSession.shared.data(for: request)
+            
+            guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
+                  let dataMap = searchJson["data"] as? [String: Any],
+                  let songMap = dataMap["song"] as? [String: Any],
+                  let list = songMap["list"] as? [[String: Any]],
+                  let first = list.first,
                   let songmid = first["songmid"] as? String else { return "" }
             
             let lyricUrl = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json")!
-            var req = URLRequest(url: lyricUrl)
-            req.setValue("https://y.qq.com", forHTTPHeaderField: "Referer")
-            let (lyricData, _) = try await URLSession.shared.data(for: req)
-            guard let lJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
-                  let b64 = lJson["lyric"] as? String,
-                  let d = Data(base64Encoded: b64) else { return "" }
-            return String(data: d, encoding: .utf8) ?? ""
+            var lyricReq = URLRequest(url: lyricUrl)
+            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer") 
+            
+            let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
+            guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
+                  let lyricB64 = lyricJson["lyric"] as? String,
+                  let decodedData = Data(base64Encoded: lyricB64),
+                  let lyricText = String(data: decodedData, encoding: .utf8) else { return "" }
+            
+            return lyricText
         } catch { return "" }
     }
 
@@ -229,30 +247,48 @@ class MusicManager: ObservableObject {
         var lines: [LyricLine] = []
         let pattern = "\\[(\\d{2,}):(\\d{2}(?:\\.\\d+)?)\\]([^\\[]*)"
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators) else { return lines }
-        let ns = lrcString as NSString
-        let results = regex.matches(in: lrcString, range: NSRange(location: 0, length: ns.length))
-        for m in results {
-            let min = Double(ns.substring(with: m.range(at: 1))) ?? 0
-            let sec = Double(ns.substring(with: m.range(at: 2))) ?? 0
-            let txt = ns.substring(with: m.range(at: 3))
-                .replacingOccurrences(of: "&#\\d+;", with: " ", options: .regularExpression)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !txt.isEmpty { lines.append(LyricLine(time: (min * 60) + sec, text: txt)) }
+        let nsString = lrcString as NSString
+        let results = regex.matches(in: lrcString, options: [], range: NSRange(location: 0, length: nsString.length))
+        
+        for match in results {
+            let minStr = nsString.substring(with: match.range(at: 1))
+            let secStr = nsString.substring(with: match.range(at: 2))
+            var text = nsString.substring(with: match.range(at: 3))
+            if let min = Double(minStr), let sec = Double(secStr) {
+                text = text.replacingOccurrences(of: "&#32;", with: " ")
+                           .replacingOccurrences(of: "&#40;", with: "(")
+                           .replacingOccurrences(of: "&#41;", with: ")")
+                           .replacingOccurrences(of: "&#45;", with: "-")
+                           .replacingOccurrences(of: "&#\\d+;", with: "", options: .regularExpression)
+                           .replacingOccurrences(of: "\r", with: "")
+                           .replacingOccurrences(of: "\n", with: "")
+                           .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty { lines.append(LyricLine(time: (min * 60) + sec, text: text)) }
+            }
         }
         return lines.sorted { $0.time < $1.time }
     }
 
     func updateIsland(songName: String, lyric: String) {
-        let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric)
+        // 🚨 将提取到的颜色打包发给灵动岛
+        let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric, themeColorHex: currentThemeColor)
         Task {
             if currentActivity == nil {
                 do {
-                    let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
-                    currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
+                    if #available(iOS 16.2, *) {
+                        let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
+                        currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
+                    } else {
+                        currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
+                    }
                 } catch {}
             } else {
-                let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
-                await currentActivity?.update(content)
+                if #available(iOS 16.2, *) {
+                    let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
+                    await currentActivity?.update(content)
+                } else {
+                    await currentActivity?.update(using: state)
+                }
             }
         }
     }
@@ -265,6 +301,45 @@ class MusicManager: ObservableObject {
         if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
         currentSongName = ""
         Task { await currentActivity?.end(dismissalPolicy: .immediate); currentActivity = nil }
-        self.errorMessage = "已停止同步"
+        self.errorMessage = "已彻底停止并关闭"
+    }
+}
+
+// ==========================================
+// 🚨 UIImage 扩展：算法提取图片主色调为 Hex 字符串
+// ==========================================
+extension UIImage {
+    func averageColorHex() -> String? {
+        guard let inputImage = CIImage(image: self) else { return nil }
+        let extentVector = CIVector(x: inputImage.extent.origin.x, y: inputImage.extent.origin.y, z: inputImage.extent.size.width, w: inputImage.extent.size.height)
+        guard let filter = CIFilter(name: "CIAreaAverage", parameters: [kCIInputImageKey: inputImage, kCIInputExtentKey: extentVector]) else { return nil }
+        guard let outputImage = filter.outputImage else { return nil }
+        
+        var bitmap = [UInt8](repeating: 0, count: 4)
+        let context = CIContext(options: [.workingColorSpace: kCFNull!])
+        context.render(outputImage, toBitmap: &bitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
+        
+        // 过滤掉太暗的颜色，防止在黑色背景的锁屏上看不清
+        let brightness = (Double(bitmap[0]) * 0.299 + Double(bitmap[1]) * 0.587 + Double(bitmap[2]) * 0.114)
+        if brightness < 50 {
+            return "#34C759" // 遇到极暗的封面，强制换成清晰的绿色
+        }
+        return String(format: "#%02x%02x%02x", bitmap[0], bitmap[1], bitmap[2])
+    }
+}
+
+extension Color {
+    init(hex: String) {
+        let hex = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r, g, b: UInt64
+        switch hex.count {
+        case 6:
+            (r, g, b) = (int >> 16, int >> 8 & 0xFF, int & 0xFF)
+        default:
+            (r, g, b) = (52, 199, 89)
+        }
+        self.init(.sRGB, red: Double(r) / 255, green: Double(g) / 255, blue:  Double(b) / 255, opacity: 1)
     }
 }
