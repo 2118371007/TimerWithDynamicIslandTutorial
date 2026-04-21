@@ -219,7 +219,7 @@ class MusicManager: ObservableObject {
                                     self.parsedLyrics = newLyrics
                                     if newLyrics.isEmpty {
                                         self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
-                                        self.errorMessage = "❌ 搜词失败: \(rawTitle)"
+                                        // 不覆盖已有的错误信息，保持搜索日志
                                     } else {
                                         self.updateIsland(songName: rawTitle, lyric: newLyrics.first?.text ?? "")
                                         self.errorMessage = "✅ 歌词已就位 (\(newLyrics.count)行)"
@@ -278,20 +278,21 @@ class MusicManager: ObservableObject {
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
-        DispatchQueue.main.async { self.errorMessage = "🔍 正在QQ音乐搜索: \(cleanTitle)..." }
+        // 🔍 只在初始时显示一次搜索信息
+        DispatchQueue.main.async { self.errorMessage = "🔍 搜索歌词中..." }
+        
         var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
         
         if lrcString.isEmpty {
-            DispatchQueue.main.async { self.errorMessage = "🔍 QQ失败，尝试搜: \(cleanTitle)" }
             lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle)
         }
         
         if lrcString.isEmpty {
-            DispatchQueue.main.async { self.errorMessage = "🔍 QQ都失败了，改用酷狗..." }
             lrcString = await fetchLyricFromKugou(keyword: cleanTitle)
         }
         
         let result = self.parseLRC(lrcString: lrcString)
+        // 只在最后一次更新最终结果
         if result.isEmpty {
             DispatchQueue.main.async { self.errorMessage = "❌ 无法获取歌词: \(cleanTitle)" }
         }
@@ -312,7 +313,6 @@ class MusicManager: ObservableObject {
                   let list = songMap["list"] as? [[String: Any]],
                   let first = list.first,
                   let songmid = first["songmid"] as? String else {
-                DispatchQueue.main.async { self.errorMessage = "❌ QQ音乐解析失败" }
                 return ""
             }
             
@@ -326,13 +326,10 @@ class MusicManager: ObservableObject {
                   let lyricB64 = lyricJson["lyric"] as? String,
                   let decodedData = Data(base64Encoded: lyricB64),
                   let lyricText = String(data: decodedData, encoding: .utf8) else {
-                DispatchQueue.main.async { self.errorMessage = "❌ QQ歌词解码失败" }
                 return ""
             }
-            DispatchQueue.main.async { self.errorMessage = "✅ QQ音乐抓取成功!" }
             return lyricText
         } catch {
-            DispatchQueue.main.async { self.errorMessage = "❌ QQ请求错误: \(error.localizedDescription)" }
             return ""
         }
     }
@@ -349,7 +346,6 @@ class MusicManager: ObservableObject {
                   let dataMap = searchJson["data"] as? [String: Any],
                   let infoArray = dataMap["info"] as? [[String: Any]],
                   let hash = infoArray.first?["hash"] as? String else {
-                DispatchQueue.main.async { self.errorMessage = "❌ 酷狗搜索失败" }
                 return ""
             }
             
@@ -359,12 +355,8 @@ class MusicManager: ObservableObject {
             lyricReq.timeoutInterval = 10
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             let lyricText = String(data: lyricData, encoding: .utf8) ?? ""
-            if !lyricText.isEmpty {
-                DispatchQueue.main.async { self.errorMessage = "✅ 酷狗歌词抓取成功!" }
-            }
             return lyricText
         } catch {
-            DispatchQueue.main.async { self.errorMessage = "❌ 酷狗请求错误: \(error.localizedDescription)" }
             return ""
         }
     }
