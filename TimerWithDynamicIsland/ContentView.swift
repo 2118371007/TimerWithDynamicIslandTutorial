@@ -86,9 +86,8 @@ class MusicManager: ObservableObject {
     private var lastUpdatedSongName = ""
     private var lastUpdatedLyric = ""
     
-    // 🚨 使用底层音频引擎，彻底避免被系统当成普通音频杀掉
-    private var audioEngine: AVAudioEngine?
-    private var playerNode: AVAudioPlayerNode?
+    // 🚨 放弃低频次声波，改用 20kHz 满音量超声波骗过 iOS 系统
+    private var audioPlayer: AVAudioPlayer?
     
     private var isFetchingLyrics = false 
 
@@ -99,7 +98,7 @@ class MusicManager: ObservableObject {
         self.lastUpdatedLyric = ""
         
         purgeOrphanedActivities()
-        configureMilitaryGradeAudio()
+        configureUltrasoundAudio()
         
         musicPlayer.beginGeneratingPlaybackNotifications()
         
@@ -124,35 +123,48 @@ class MusicManager: ObservableObject {
         }
     }
     
-    private func configureMilitaryGradeAudio() {
+    private func configureUltrasoundAudio() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowBluetooth, .allowAirPlay])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            // 🚨 丢弃普通的 AVAudioPlayer，启用 AVAudioEngine
-            audioEngine = AVAudioEngine()
-            playerNode = AVAudioPlayerNode()
+            let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("ultrasound.wav")
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatLinearPCM),
+                AVSampleRateKey: 44100.0,
+                AVNumberOfChannelsKey: 1,
+                AVLinearPCMBitDepthKey: 16,
+                AVLinearPCMIsNonInterleaved: false,
+                AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false
+            ]
             
-            guard let engine = audioEngine, let player = playerNode else { return }
-            
-            engine.attach(player)
-            let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
-            engine.connect(player, to: engine.mainMixerNode, format: format)
-            try engine.start()
-            
-            // 制造一段完美的内存音频波形 (无文件残留)
-            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100)!
-            buffer.frameLength = 44100
-            if let channelData = buffer.floatChannelData {
-                for i in 0..<Int(buffer.frameLength) {
-                    channelData[0][i] = Float(sin(2.0 * .pi * 10.0 * Double(i) / 44100.0) * 0.1)
+            let format = AVAudioFormat(settings: settings)!
+            let frameCount = AVAudioFrameCount(44100 * 2) // 2秒循环
+            if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
+                buffer.frameLength = frameCount
+                if let int16ChannelData = buffer.int16ChannelData {
+                    // 🚨 终极核武器：20,000Hz (20kHz) 超声波，振幅拉满 (32767)
+                    // 人耳完全听不见，扬声器也发不出，但系统能量检测会认为它在满音量震天响！
+                    let sampleRate = 44100.0
+                    let frequency = 20000.0 // 20kHz 超声波
+                    let amplitude = 32767.0 // 满音量
+                    for i in 0..<Int(frameCount) {
+                        let value = sin(2.0 * .pi * frequency * Double(i) / sampleRate) * amplitude
+                        int16ChannelData[0][i] = Int16(value)
+                    }
                 }
+                let file = try AVAudioFile(forWriting: fileURL, settings: settings)
+                try file.write(from: buffer)
             }
             
-            player.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
-            player.play()
+            audioPlayer = try AVAudioPlayer(contentsOf: fileURL)
+            audioPlayer?.numberOfLoops = -1
+            audioPlayer?.volume = 1.0 // 🚨 关键：保持 1.0 满音量，系统绝对不敢杀
+            audioPlayer?.prepareToPlay()
+            audioPlayer?.play()
             
-            // 🚨 防御接听电话/闹钟打断导致引擎掉线
+            // 防御被打断
             NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
                 guard let self = self,
                       let userInfo = notification.userInfo,
@@ -161,12 +173,11 @@ class MusicManager: ObservableObject {
                       
                 if type == .ended {
                     try? AVAudioSession.sharedInstance().setActive(true)
-                    try? self.audioEngine?.start()
-                    self.playerNode?.play()
+                    self.audioPlayer?.play()
                 }
             }
             
-            DispatchQueue.main.async { self.errorMessage = "✅ AVAudioEngine 硬件级保活启动" }
+            DispatchQueue.main.async { self.errorMessage = "✅ 20kHz超声波保活启动" }
         } catch {
             DispatchQueue.main.async { self.errorMessage = "❌ 引擎崩溃: \(error.localizedDescription)" }
         }
@@ -199,11 +210,10 @@ class MusicManager: ObservableObject {
             let otherAudioPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
             let isPlaying = systemPlaying || otherAudioPlaying
             
-            // 引擎防坠毁：如果音频意外停止，强行救活
-            if self.playerNode?.isPlaying == false {
+            // 引擎防坠毁：超声波绝对不能停
+            if self.audioPlayer?.isPlaying == false {
                 try? AVAudioSession.sharedInstance().setActive(true)
-                try? self.audioEngine?.start()
-                self.playerNode?.play()
+                self.audioPlayer?.play()
             }
             
             // 🚨 强化的抗冻结惯性时钟
@@ -476,8 +486,7 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         masterTimer?.cancel()
-        playerNode?.stop()
-        audioEngine?.stop()
+        audioPlayer?.stop()
         NotificationCenter.default.removeObserver(self)
         
         currentSongName = ""
