@@ -328,7 +328,9 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
+                        // 🔑 关键修复：设置 staleDate 为 5 分钟后，告诉系统持续推送更新
+                        let staleDate = Calendar.current.date(byAdding: .second, value: 300, to: Date())
+                        let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
@@ -336,7 +338,9 @@ class MusicManager: ObservableObject {
                 } catch {}
             } else {
                 if #available(iOS 16.2, *) {
-                    let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
+                    // 🔑 关键修复：每次更新都刷新 staleDate，保持 Activity 活跃
+                    let staleDate = Calendar.current.date(byAdding: .second, value: 300, to: Date())
+                    let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                     await currentActivity?.update(content)
                 } else {
                     await currentActivity?.update(using: state)
