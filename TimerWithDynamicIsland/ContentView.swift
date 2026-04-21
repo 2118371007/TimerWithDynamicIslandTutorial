@@ -11,7 +11,7 @@ struct LyricLine {
 }
 
 // ==========================================
-// 1. UI 界面
+// 1. UI 界面：监听模式
 // ==========================================
 struct ContentView: View {
     @State private var isMonitoring = false
@@ -19,14 +19,14 @@ struct ContentView: View {
     
     var body: some View {
         VStack(spacing: 20) {
-            Image(systemName: isMonitoring ? "music.note.house.fill" : "music.note.house")
+            Image(systemName: isMonitoring ? "waveform.and.magnifyingglass" : "music.note.house")
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "军用级保活引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "Apple Music 监听中..." : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -37,7 +37,7 @@ struct ContentView: View {
                     musicManager.stopEverything()
                 }
             }) {
-                Text(isMonitoring ? "🛑 彻底停止并关闭" : "🚀 开启不死同步")
+                Text(isMonitoring ? "🛑 停止监听" : "🚀 开启 Apple Music 监听")
                     .font(.title3.bold())
                     .padding()
                     .frame(maxWidth: .infinity)
@@ -65,11 +65,12 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (AVAudioEngine 硬件级保活)
+// 2. 核心大心脏 (Apple Music 旁观监听版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
     
+    // 🚨 恢复使用 systemMusicPlayer 监听外部 Apple Music
     private var musicPlayer = MPMusicPlayerController.systemMusicPlayer
     private var currentActivity: Activity<TimerWidgetAttributes>? = nil
     
@@ -82,23 +83,21 @@ class MusicManager: ObservableObject {
     private var currentSongName = ""
     private var engineTickCount = 0
     
-    // 灵动岛预算保护锁
     private var lastUpdatedSongName = ""
     private var lastUpdatedLyric = ""
     
-    // 🚨 放弃低频次声波，改用 20kHz 满音量超声波骗过 iOS 系统
-    private var audioPlayer: AVAudioPlayer?
-    
+    // 静音保活播放器
+    private var backgroundAudioPlayer: AVAudioPlayer?
     private var isFetchingLyrics = false 
 
     func setupMonitoring() {
-        self.errorMessage = "正在初始化底层驱动..."
+        self.errorMessage = "正在初始化监听驱动..."
         self.engineTickCount = 0
         self.lastUpdatedSongName = ""
         self.lastUpdatedLyric = ""
         
         purgeOrphanedActivities()
-        configureUltrasoundAudio()
+        configureSilentKeepAlive() // 启动静音保活
         
         musicPlayer.beginGeneratingPlaybackNotifications()
         
@@ -123,12 +122,14 @@ class MusicManager: ObservableObject {
         }
     }
     
-    private func configureUltrasoundAudio() {
+    // 🚨 静音保活引擎：允许与 Apple Music 混音播放
+    private func configureSilentKeepAlive() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowBluetooth, .allowAirPlay])
+            // 设置分类为 playback，并允许与其他音乐（Apple Music）混音！
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("ultrasound.wav")
+            let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("silent_loop.wav")
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatLinearPCM),
                 AVSampleRateKey: 44100.0,
@@ -140,46 +141,35 @@ class MusicManager: ObservableObject {
             ]
             
             let format = AVAudioFormat(settings: settings)!
-            let frameCount = AVAudioFrameCount(44100 * 2) // 2秒循环
+            let frameCount = AVAudioFrameCount(44100)
             if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
                 buffer.frameLength = frameCount
-                if let int16ChannelData = buffer.int16ChannelData {
-                    // 🚨 终极核武器：20,000Hz (20kHz) 超声波，振幅拉满 (32767)
-                    // 人耳完全听不见，扬声器也发不出，但系统能量检测会认为它在满音量震天响！
-                    let sampleRate = 44100.0
-                    let frequency = 20000.0 // 20kHz 超声波
-                    let amplitude = 32767.0 // 满音量
-                    for i in 0..<Int(frameCount) {
-                        let value = sin(2.0 * .pi * frequency * Double(i) / sampleRate) * amplitude
-                        int16ChannelData[0][i] = Int16(value)
-                    }
+                if let channelData = buffer.int16ChannelData {
+                    // 填入极其微弱的数值 (1)，人耳绝对听不见，但能骗过系统
+                    for i in 0..<Int(frameCount) { channelData[0][i] = 1 }
                 }
                 let file = try AVAudioFile(forWriting: fileURL, settings: settings)
                 try file.write(from: buffer)
             }
             
-            audioPlayer = try AVAudioPlayer(contentsOf: fileURL)
-            audioPlayer?.numberOfLoops = -1
-            audioPlayer?.volume = 1.0 // 🚨 关键：保持 1.0 满音量，系统绝对不敢杀
-            audioPlayer?.prepareToPlay()
-            audioPlayer?.play()
+            backgroundAudioPlayer = try AVAudioPlayer(contentsOf: fileURL)
+            backgroundAudioPlayer?.numberOfLoops = -1
+            backgroundAudioPlayer?.volume = 0.05
+            backgroundAudioPlayer?.prepareToPlay()
+            backgroundAudioPlayer?.play()
             
-            // 防御被打断
+            // 监听打断（如来电），结束后恢复静音播放
             NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
-                guard let self = self,
-                      let userInfo = notification.userInfo,
+                guard let self = self, let userInfo = notification.userInfo,
                       let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
                       let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-                      
                 if type == .ended {
                     try? AVAudioSession.sharedInstance().setActive(true)
-                    self.audioPlayer?.play()
+                    self.backgroundAudioPlayer?.play()
                 }
             }
-            
-            DispatchQueue.main.async { self.errorMessage = "✅ 20kHz超声波保活启动" }
         } catch {
-            DispatchQueue.main.async { self.errorMessage = "❌ 引擎崩溃: \(error.localizedDescription)" }
+            DispatchQueue.main.async { self.errorMessage = "❌ 保活引擎初始化失败" }
         }
     }
 
@@ -198,45 +188,42 @@ class MusicManager: ObservableObject {
             guard let self = self else { return }
             self.engineTickCount += 1
             let now = Date()
+            let timeSinceLastTick = now.timeIntervalSince(lastTickDate)
+            lastTickDate = now
+            
+            // 读取外部 Apple Music 信息
             let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
             let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
             let systemTime = self.musicPlayer.currentPlaybackTime
             
-            let timeSinceLastTick = now.timeIntervalSince(lastTickDate)
-            lastTickDate = now
-            
-            // 🚨 终极探测器：就算系统切断了 MusicPlayer 状态，只要有人在发声，就是正在播放
-            let systemPlaying = (self.musicPlayer.playbackState == .playing)
+            // 🚨 终极判断：在后台时，systemMusicPlayer 的状态可能被冻结。
+            // 我们通过检测 iOS 系统底层“是否有其他音频在发声”来判断 Apple Music 是否在播放！
             let otherAudioPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
-            let isPlaying = systemPlaying || otherAudioPlaying
+            let isPlaying = (self.musicPlayer.playbackState == .playing) || otherAudioPlaying
             
-            // 引擎防坠毁：超声波绝对不能停
-            if self.audioPlayer?.isPlaying == false {
+            // 确保静音保活一直在线
+            if self.backgroundAudioPlayer?.isPlaying == false {
                 try? AVAudioSession.sharedInstance().setActive(true)
-                self.audioPlayer?.play()
+                self.backgroundAudioPlayer?.play()
             }
             
-            // 🚨 强化的抗冻结惯性时钟
-            if !systemTime.isNaN && systemTime > 0 {
-                if abs(systemTime - lastKnownSystemTime) > 0.001 {
-                    // 如果时间突变（且不是切后台导致的归零异常），同步真实时间
-                    if !(systemTime < 1.0 && lastKnownSystemTime > 5.0 && !systemPlaying) {
-                        inertialTime = systemTime
-                        lastKnownSystemTime = systemTime
-                    }
+            // 🚨 惯性时钟：因为退到后台后 systemTime 会冻结，必须靠我们自己加时间
+            if !systemTime.isNaN {
+                if systemTime != lastKnownSystemTime {
+                    // 如果系统时间更新了（比如切歌、快进，或者回到前台），同步真实时间
+                    inertialTime = systemTime
+                    lastKnownSystemTime = systemTime
                 } else if isPlaying {
-                    // 后台卡死时，依靠内部时钟自己走
+                    // 如果系统时间没动（在后台被冻结），但系统检测到在发声，我们就自己推动时间
                     inertialTime += timeSinceLastTick
                 }
-            } else if isPlaying {
-                inertialTime += timeSinceLastTick
             }
             
             // 切歌监测
             if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                 self.currentSongName = rawTitle
                 self.currentLyricIndex = -1
-                self.parsedLyrics = [] 
+                self.parsedLyrics = []
                 
                 if let artwork = self.musicPlayer.nowPlayingItem?.artwork,
                    let image = artwork.image(at: CGSize(width: 50, height: 50)) {
@@ -270,7 +257,8 @@ class MusicManager: ObservableObject {
             // 歌词滚动推送
             if isPlaying {
                 if !self.parsedLyrics.isEmpty {
-                    let calculatedTime = inertialTime + 0.45
+                    // 惯性时间 + 0.3秒的提前量，让歌词显示更跟脚
+                    let calculatedTime = inertialTime + 0.3
                     var newIndex = -1
                     for (index, line) in self.parsedLyrics.enumerated() {
                         if calculatedTime >= line.time { newIndex = index } else { break }
@@ -294,8 +282,8 @@ class MusicManager: ObservableObject {
             if self.engineTickCount % 10 == 0 {
                 let secondsAlive = self.engineTickCount / 5
                 DispatchQueue.main.async {
-                    if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("⚠️") && !self.errorMessage.contains("新") {
-                        self.errorMessage = "✅ 后台存活: \(secondsAlive) 秒 | 歌词: \(self.parsedLyrics.count) 行 | \(isPlaying ? "▶️" : "⏸")"
+                    if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("❌") {
+                        self.errorMessage = "✅ 监听中: \(secondsAlive)秒 | 歌词:\(self.parsedLyrics.count) | \(isPlaying ? "▶️" : "⏸")"
                     }
                 }
             }
@@ -337,9 +325,7 @@ class MusicManager: ObservableObject {
                   let result = searchJson["result"] as? [String: Any],
                   let songs = result["songs"] as? [[String: Any]],
                   let firstSong = songs.first,
-                  let songId = firstSong["id"] as? Int else {
-                return ""
-            }
+                  let songId = firstSong["id"] as? Int else { return "" }
             
             let lyricUrl = URL(string: "https://music.163.com/api/song/lyric?id=\(songId)&lv=1&kv=1&tv=-1")!
             var lyricReq = URLRequest(url: lyricUrl)
@@ -348,13 +334,9 @@ class MusicManager: ObservableObject {
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
                   let lrc = lyricJson["lrc"] as? [String: Any],
-                  let lyricText = lrc["lyric"] as? String else {
-                return ""
-            }
+                  let lyricText = lrc["lyric"] as? String else { return "" }
             return lyricText
-        } catch {
-            return ""
-        }
+        } catch { return "" }
     }
 
     func fetchLyricFromQQMusic(keyword: String) async -> String {
@@ -370,9 +352,7 @@ class MusicManager: ObservableObject {
                   let songMap = dataMap["song"] as? [String: Any],
                   let list = songMap["list"] as? [[String: Any]],
                   let first = list.first,
-                  let songmid = first["songmid"] as? String else {
-                return ""
-            }
+                  let songmid = first["songmid"] as? String else { return "" }
             
             let lyricUrl = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json")!
             var lyricReq = URLRequest(url: lyricUrl)
@@ -383,13 +363,9 @@ class MusicManager: ObservableObject {
             guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
                   let lyricB64 = lyricJson["lyric"] as? String,
                   let decodedData = Data(base64Encoded: lyricB64),
-                  let lyricText = String(data: decodedData, encoding: .utf8) else {
-                return ""
-            }
+                  let lyricText = String(data: decodedData, encoding: .utf8) else { return "" }
             return lyricText
-        } catch {
-            return ""
-        }
+        } catch { return "" }
     }
 
     func fetchLyricFromKugou(keyword: String) async -> String {
@@ -403,9 +379,7 @@ class MusicManager: ObservableObject {
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
                   let dataMap = searchJson["data"] as? [String: Any],
                   let infoArray = dataMap["info"] as? [[String: Any]],
-                  let hash = infoArray.first?["hash"] as? String else {
-                return ""
-            }
+                  let hash = infoArray.first?["hash"] as? String else { return "" }
             
             let lyricUrl = URL(string: "https://m.kugou.com/app/i/krc.php?cmd=100&hash=\(hash)&timelength=999999")!
             var lyricReq = URLRequest(url: lyricUrl)
@@ -414,9 +388,7 @@ class MusicManager: ObservableObject {
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             let lyricText = String(data: lyricData, encoding: .utf8) ?? ""
             return lyricText
-        } catch {
-            return ""
-        }
+        } catch { return "" }
     }
 
     func parseLRC(lrcString: String) -> [LyricLine] {
@@ -464,12 +436,11 @@ class MusicManager: ObservableObject {
                         let staleDate = Date().addingTimeInterval(300)
                         let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
-                        DispatchQueue.main.async { self.errorMessage = "🆕 灵动岛已创建" }
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
                     }
                 } catch {
-                    DispatchQueue.main.async { self.errorMessage = "❌ 灵动岛创建失败: \(error.localizedDescription)" }
+                    print("灵动岛错误: \(error)")
                 }
             } else {
                 if #available(iOS 16.2, *) {
@@ -486,14 +457,14 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         masterTimer?.cancel()
-        audioPlayer?.stop()
+        backgroundAudioPlayer?.stop()
         NotificationCenter.default.removeObserver(self)
         
         currentSongName = ""
         lastUpdatedSongName = ""
         lastUpdatedLyric = ""
         purgeOrphanedActivities() 
-        self.errorMessage = "已彻底停止并关闭"
+        self.errorMessage = "已停止监听并关闭"
     }
 }
 
