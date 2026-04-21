@@ -356,7 +356,9 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
+                        // 🚨 关键：设置 staleDate 为30秒后，防止Live Activity过期
+                        let staleDate = Date().addingTimeInterval(30)
+                        let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
@@ -364,7 +366,9 @@ class MusicManager: ObservableObject {
                 } catch {}
             } else {
                 if #available(iOS 16.2, *) {
-                    let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
+                    // 🚨 每次更新都延长 staleDate，这样灵动岛就不会卡住了
+                    let staleDate = Date().addingTimeInterval(30)
+                    let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                     await currentActivity?.update(content)
                 } else {
                     await currentActivity?.update(using: state)
