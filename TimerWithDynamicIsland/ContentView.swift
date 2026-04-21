@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "防冻结幻彩引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "白噪音保活引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -59,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (防僵尸 + 异步休眠防冻结版)
+// 2. 核心大心脏 (纳米白噪音保活版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -71,8 +71,6 @@ class MusicManager: ObservableObject {
     @Published var currentThemeColor: String = "#34C759"
     
     private var parsedLyrics: [LyricLine] = []
-    
-    // 🚨 废弃旧版 Timer，启用全新异步并发任务！
     private var lyricSyncTask: Task<Void, Never>? 
     private var currentLyricIndex = -1
     private var currentSongName = ""
@@ -80,16 +78,9 @@ class MusicManager: ObservableObject {
     private let silenceEngine = AVAudioEngine()
     private let silencePlayer = AVAudioPlayerNode()
 
-    // ------------------------------------------
-    // 启动与保活
-    // ------------------------------------------
     func setupMonitoring() {
-        self.errorMessage = "正在启动防冻结引擎..."
-        
-        // 🚨 1. 启动时的第一件事：清剿所有僵尸灵动岛！
+        self.errorMessage = "正在注入微量白噪音..."
         purgeOrphanedActivities()
-        
-        // 2. 启动静音保活引擎
         configureAudioSession()
         
         MPMediaLibrary.requestAuthorization { status in
@@ -104,7 +95,6 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 🚨 清剿残留灵动岛，确保永远只有一条通知
     private func purgeOrphanedActivities() {
         Task {
             for activity in Activity<TimerWidgetAttributes>.activities {
@@ -114,6 +104,7 @@ class MusicManager: ObservableObject {
         }
     }
     
+    // 🚨 终极黑科技：纳米级白噪音注入器
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
@@ -126,6 +117,17 @@ class MusicManager: ObservableObject {
             
             if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100) {
                 buffer.frameLength = 44100
+                
+                // 🚨 核心破解：给缓冲液注入听不见的极其微弱的浮点数噪音
+                // 这样 iOS 就不会认为你是绝对静音而把你的后台杀掉！
+                if let floatChannelData = buffer.floatChannelData {
+                    for channel in 0..<Int(format.channelCount) {
+                        for frame in 0..<Int(buffer.frameLength) {
+                            floatChannelData[channel][frame] = 1e-6 // 0.000001 音量
+                        }
+                    }
+                }
+                
                 silencePlayer.scheduleBuffer(buffer, at: nil, options: .loops)
                 silencePlayer.play()
             }
@@ -198,16 +200,9 @@ class MusicManager: ObservableObject {
         }
     }
 
-    // ------------------------------------------
-    // 🚨 全新异步防冻结循环引擎 (核心升级)
-    // ------------------------------------------
     func startLyricSyncTask(songName: String) {
-        // 先停掉旧任务
         lyricSyncTask?.cancel()
-        
-        // 开启一个永久存活的异步并发任务
         lyricSyncTask = Task {
-            // 只要任务没被取消，就无限循环
             while !Task.isCancelled {
                 let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
                 
@@ -217,7 +212,6 @@ class MusicManager: ObservableObject {
                         if currentTime >= line.time { newIndex = index } else { break }
                     }
                     
-                    // 如果歌词变了，且系统没被取消，推送到灵动岛
                     if newIndex != self.currentLyricIndex && newIndex >= 0 && !Task.isCancelled {
                         self.currentLyricIndex = newIndex
                         let currentText = self.parsedLyrics[newIndex].text
@@ -227,7 +221,6 @@ class MusicManager: ObservableObject {
                     }
                 }
                 
-                // 🚨 替代 Timer：使用底层的非阻塞休眠，0.1秒唤醒一次。完美防冻结！
                 try? await Task.sleep(nanoseconds: 100_000_000) 
             }
         }
@@ -292,7 +285,6 @@ class MusicManager: ObservableObject {
     func updateIsland(songName: String, lyric: String) {
         let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric, themeColorHex: currentThemeColor)
         Task {
-            // 🚨 严谨校验：如果失联了，尝试抓取并接管系统中现存的 Activity
             if currentActivity == nil {
                 if let existing = Activity<TimerWidgetAttributes>.activities.first {
                     self.currentActivity = existing
@@ -327,7 +319,7 @@ class MusicManager: ObservableObject {
         if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
         
         currentSongName = ""
-        purgeOrphanedActivities() // 彻底停止时也清剿一遍
+        purgeOrphanedActivities() 
         self.errorMessage = "已彻底停止并关闭"
     }
 }
