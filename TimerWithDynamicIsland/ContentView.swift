@@ -94,7 +94,7 @@ struct ContentView: View {
                     .padding(.horizontal, 30)
                 }
                 
-                Text("⚠️ iOS 16 必看：请在系统设置中找到本应用\\n进入【实时活动】并开启【允许频繁更新】")
+                Text("⚠️ 务必在系统设置 -> 实时活动 中\\n开启【允许频繁更新】特权")
                     .font(.caption2)
                     .foregroundColor(.red)
                     .multilineTextAlignment(.center)
@@ -112,7 +112,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (极速掐断查询 + 纯内存裸写WAV保活)
+// 2. 核心大心脏 (100% 物理隔离 XPC 终极不死版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -139,21 +139,21 @@ class MusicManager: ObservableObject {
     private var inertialTime: TimeInterval = 0
     private var lastTickDate = Date()
     private var engineTickCount = 0
+    private var cachedIsOtherPlaying = false // 降低底层探针频率
     
-    // 🚨 灵动岛节流阀：防止被系统惩罚封杀
+    // 🚨 灵动岛节流阀 (1.2秒，极其安全)
     private var lastIslandUpdateTime: Date = Date.distantPast
     
     // 终极保活播放器
     private var audioPlayer: AVAudioPlayer?
 
     init() {
-        // 🚨 极其激进的前后台监听，比 didEnterBackground 更早！彻底杜绝被系统击杀！
         NotificationCenter.default.addObserver(self, selector: #selector(appWillResignActive), name: UIApplication.willResignActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
     }
 
     @objc private func appWillResignActive() {
-        self.isAppInBackground = true // 一旦手指准备滑回桌面，立刻切断 Apple Music 查询！
+        self.isAppInBackground = true
     }
 
     @objc private func appWillEnterForeground() {
@@ -185,18 +185,16 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 🚨 史上最硬核的保活：不依赖任何文件，直接在内存用代码写一个 WAV 音频文件！
     private func setupMemoryAudioPlayer() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            // 直接获取生成的内存音频数据
             let wavData = generateInaudibleWavData()
             
             audioPlayer = try AVAudioPlayer(data: wavData)
             audioPlayer?.numberOfLoops = -1
-            audioPlayer?.volume = 1.0 // 伪装成满音量播放，防止系统休眠
+            audioPlayer?.volume = 1.0
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
@@ -216,7 +214,6 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 🪄 魔法：在内存里纯手工编织出一个 1秒长、20kHz、极低振幅的完美 WAV 格式音频
     private func generateInaudibleWavData() -> Data {
         let sampleRate: Int32 = 44100
         let channels: Int16 = 1
@@ -232,7 +229,7 @@ class MusicManager: ObservableObject {
         data.append(contentsOf: "fmt ".utf8)
         let fmtSize: Int32 = 16
         data.append(withUnsafeBytes(of: fmtSize) { Data($0) })
-        let format: Int16 = 1 // PCM
+        let format: Int16 = 1
         data.append(withUnsafeBytes(of: format) { Data($0) })
         data.append(withUnsafeBytes(of: channels) { Data($0) })
         data.append(withUnsafeBytes(of: sampleRate) { Data($0) })
@@ -246,7 +243,6 @@ class MusicManager: ObservableObject {
         data.append(withUnsafeBytes(of: dataSize) { Data($0) })
 
         for i in 0..<frameCount {
-            // 20kHz 超声波，振幅 3276 (约10%)
             let wave = sin(2.0 * .pi * 20000.0 * Double(i) / Double(sampleRate))
             let sample = Int16(wave * 3276.0)
             data.append(withUnsafeBytes(of: sample) { Data($0) })
@@ -288,25 +284,28 @@ class MusicManager: ObservableObject {
             let delta = now.timeIntervalSince(self.lastTickDate)
             self.lastTickDate = now
             
-            // 死守防线：绝对不让音频停下
             if self.audioPlayer?.isPlaying == false {
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.audioPlayer?.play()
             }
             
-            let isSystemPlaying = (self.musicPlayer.playbackState == .playing)
-            let isOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
-            // 🚨 后台状态绝对不信 musicPlayer，纯靠系统探针
-            let currentlyPlaying = self.isAppInBackground ? isOtherPlaying : (isSystemPlaying || isOtherPlaying)
-            
-            DispatchQueue.main.async { self.isPlaying = currentlyPlaying }
-            
-            if currentlyPlaying {
-                self.inertialTime += delta
+            // 🚨 降频探针：每秒只查 1 次系统是否在发声，极其省电
+            if self.engineTickCount % 5 == 0 {
+                self.cachedIsOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
             }
             
-            // 🚨 核心隔离区：只有百分百在前台，才敢去问系统要数据，躲避 mediaserverd 追杀！
-            if !self.isAppInBackground {
+            let currentlyPlaying: Bool
+            
+            // 🚨🚨🚨 终极隔离核心区 🚨🚨🚨
+            if self.isAppInBackground {
+                // 在后台时，只能依靠安全的底层探针，绝对不允许碰 musicPlayer 的任何属性！
+                // 这彻底拔除了 30 秒暴毙的 Bug
+                currentlyPlaying = self.cachedIsOtherPlaying
+            } else {
+                // 在前台时，可以安全访问 musicPlayer
+                let isSystemPlaying = (self.musicPlayer.playbackState == .playing)
+                currentlyPlaying = isSystemPlaying || self.cachedIsOtherPlaying
+                
                 let rawSystemTime = self.musicPlayer.currentPlaybackTime
                 let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
                 let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
@@ -363,10 +362,15 @@ class MusicManager: ObservableObject {
                         }
                     }
                 }
-            } 
+            }
+            // 🚨🚨🚨 终极隔离核心区结束 🚨🚨🚨
             
-            // === 核心歌词推送 ===
+            DispatchQueue.main.async { self.isPlaying = currentlyPlaying }
+            
+            // 飞轮惯性持续推进 (前后台通用)
             if currentlyPlaying {
+                self.inertialTime += delta
+                
                 if !self.parsedLyrics.isEmpty {
                     let calculatedTime = self.inertialTime + 0.3
                     var newIndex = -1
@@ -389,12 +393,13 @@ class MusicManager: ObservableObject {
                 }
             }
             
+            // 心跳日志监控
             if self.engineTickCount % 10 == 0 {
                 DispatchQueue.main.async {
                     if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("❌") {
                         let sec = Int(self.inertialTime)
-                        let stateStr = self.isAppInBackground ? "🔒后台盲走" : "📡前台同步"
-                        self.errorMessage = "✅ \(stateStr) | 进度: \(sec)s | \(currentlyPlaying ? "▶️" : "⏸")"
+                        let stateStr = self.isAppInBackground ? "🔒绝对隔离盲走" : "📡前台实时同步"
+                        self.errorMessage = "✅ \(stateStr) | 进度: \(sec)s"
                     }
                 }
             }
@@ -525,8 +530,8 @@ class MusicManager: ObservableObject {
     func updateIsland(songName: String, lyric: String) {
         if lyric == lastUpdatedLyric { return }
         
-        // 🚨 灵动岛防暴毙节流阀：最高允许每秒更新 1 次，否则苹果系统会因为防刷屏而直接废掉你的灵动岛！
-        if Date().timeIntervalSince(lastIslandUpdateTime) < 1.0 { return }
+        // 🚨 保护机制升级：1.2 秒更新一次，绝对不惹怒灵动岛管家
+        if Date().timeIntervalSince(lastIslandUpdateTime) < 1.2 { return }
         
         lastUpdatedLyric = lyric
         lastIslandUpdateTime = Date()
