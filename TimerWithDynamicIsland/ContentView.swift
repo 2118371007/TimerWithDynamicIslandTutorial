@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "防打断强心针引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "装甲级不死引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -59,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (去除括号Bug + 加入强心针)
+// 2. 核心大心脏 (内存级 WAV 播放器版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -76,23 +76,21 @@ class MusicManager: ObservableObject {
     private var currentSongName = ""
     private var lastPlaybackState: MPMusicPlaybackState = .stopped
     
-    private let silenceEngine = AVAudioEngine()
-    private let silencePlayer = AVAudioPlayerNode()
-    
-    // 🚨 强制心跳定时器
+    // 🚨 终极武器：内存级 AVAudioPlayer
+    private var silencePlayer: AVAudioPlayer?
     private var heartbeatTimer: Timer?
 
     func setupMonitoring() {
-        self.errorMessage = "正在唤醒系统底层通讯..."
+        self.errorMessage = "正在启动装甲级保活引擎..."
         purgeOrphanedActivities()
-        configureAudioSession()
+        configureBulletproofAudio()
         
         musicPlayer.beginGeneratingPlaybackNotifications()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 引擎启动，切歌秒级响应！"
+                    self.errorMessage = "✅ 引擎启动，彻底免疫 30 秒断流！"
                     self.startMasterLoop()
                 } else {
                     self.errorMessage = "❌ 被拒绝访问 Apple Music"
@@ -110,48 +108,44 @@ class MusicManager: ObservableObject {
         }
     }
     
-    private func configureAudioSession() {
+    // 🚨 内存手写静音 WAV，彻底解决音质切换导致的崩溃
+    private func configureBulletproofAudio() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            silenceEngine.attach(silencePlayer)
-            let format = silenceEngine.outputNode.inputFormat(forBus: 0)
-            silenceEngine.connect(silencePlayer, to: silenceEngine.outputNode, format: format)
-            try silenceEngine.start()
+            // 构建一个合法的 46 字节的静音 WAV 文件 (PCM, 44.1kHz, Mono, 16-bit)
+            let silentWAV: [UInt8] = [
+                0x52, 0x49, 0x46, 0x46, 0x26, 0x00, 0x00, 0x00,
+                0x57, 0x41, 0x56, 0x45, 0x66, 0x6d, 0x74, 0x20,
+                0x10, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00,
+                0x44, 0xac, 0x00, 0x00, 0x88, 0x58, 0x01, 0x00,
+                0x02, 0x00, 0x10, 0x00, 0x64, 0x61, 0x74, 0x61,
+                0x02, 0x00, 0x00, 0x00, 0x00, 0x00
+            ]
+            let wavData = Data(silentWAV)
             
-            if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100) {
-                buffer.frameLength = 44100
-                if let floatChannelData = buffer.floatChannelData {
-                    for channel in 0..<Int(format.channelCount) {
-                        for frame in 0..<Int(buffer.frameLength) {
-                            // 稍微提高一丁点噪音级别，确保不被最新 iOS 系统忽略
-                            floatChannelData[channel][frame] = 1e-4 
-                        }
-                    }
-                }
-                silencePlayer.scheduleBuffer(buffer, at: nil, options: .loops)
-                silencePlayer.play()
-            }
+            silencePlayer = try AVAudioPlayer(data: wavData)
+            silencePlayer?.numberOfLoops = -1 // 无限循环
+            silencePlayer?.volume = 0.01 // 极微弱音量防检测
+            silencePlayer?.prepareToPlay()
+            silencePlayer?.play()
             
-            // 🚨 终极心跳复苏：不管是谁掐断了我们的白噪音，每2秒强行重启一次！
+            // 心脏复苏定时器
             heartbeatTimer?.invalidate()
-            // 必须挂在 common 模式下，防止后台定时器失效
             let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
                 guard let self = self else { return }
-                if !self.silenceEngine.isRunning {
+                if self.silencePlayer?.isPlaying == false {
                     do {
                         try AVAudioSession.sharedInstance().setActive(true)
-                        try self.silenceEngine.start()
-                        self.silencePlayer.play()
-                        print("🫀 引擎被掐断，已成功自愈重启！")
+                        self.silencePlayer?.play()
                     } catch { }
                 }
             }
             RunLoop.main.add(timer, forMode: .common)
             heartbeatTimer = timer
             
-        } catch { print("音频引擎故障") }
+        } catch { print("装甲音频引擎初始化失败") }
     }
 
     private func startMasterLoop() {
@@ -194,11 +188,10 @@ class MusicManager: ObservableObject {
                     await self.fetchAndParseLyrics(title: rawTitle, artist: artist)
                 }
                 
-                // 歌词滚动
+                // 歌词滚动推送
                 if isPlaying {
                     if !self.parsedLyrics.isEmpty {
                         let calculatedTime = inertialTime + 0.45
-                        
                         var newIndex = -1
                         for (index, line) in self.parsedLyrics.enumerated() {
                             if calculatedTime >= line.time { newIndex = index } else { break }
@@ -219,7 +212,6 @@ class MusicManager: ObservableObject {
                 }
                 
                 self.lastPlaybackState = self.musicPlayer.playbackState
-                
                 try? await Task.sleep(nanoseconds: 100_000_000) 
             }
         }
@@ -235,9 +227,7 @@ class MusicManager: ObservableObject {
         var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
         
-        if lrcString.isEmpty {
-            lrcString = await fetchLyricFromKugou(keyword: cleanTitle)
-        }
+        if lrcString.isEmpty { lrcString = await fetchLyricFromKugou(keyword: cleanTitle) }
         
         self.parsedLyrics = self.parseLRC(lrcString: lrcString)
         
@@ -328,9 +318,7 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        // 🔑 关键修复：设置 staleDate 为 5 分钟后，告诉系统持续推送更新
-                        let staleDate = Calendar.current.date(byAdding: .second, value: 300, to: Date())
-                        let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
+                        let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
@@ -338,9 +326,7 @@ class MusicManager: ObservableObject {
                 } catch {}
             } else {
                 if #available(iOS 16.2, *) {
-                    // 🔑 关键修复：每次更新都刷新 staleDate，保持 Activity 活跃
-                    let staleDate = Calendar.current.date(byAdding: .second, value: 300, to: Date())
-                    let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
+                    let content = ActivityContent(state: state, staleDate: nil, relevanceScore: 100.0)
                     await currentActivity?.update(content)
                 } else {
                     await currentActivity?.update(using: state)
@@ -353,7 +339,7 @@ class MusicManager: ObservableObject {
         musicPlayer.endGeneratingPlaybackNotifications()
         masterLoopTask?.cancel()
         heartbeatTimer?.invalidate()
-        if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
+        silencePlayer?.stop()
         currentSongName = ""
         purgeOrphanedActivities() 
         self.errorMessage = "已彻底停止并关闭"
