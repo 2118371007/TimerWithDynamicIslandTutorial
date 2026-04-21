@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "惯性导航引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "防打断强心针引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -59,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏
+// 2. 核心大心脏 (去除括号Bug + 加入强心针)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -78,6 +78,9 @@ class MusicManager: ObservableObject {
     
     private let silenceEngine = AVAudioEngine()
     private let silencePlayer = AVAudioPlayerNode()
+    
+    // 🚨 强制心跳定时器
+    private var heartbeatTimer: Timer?
 
     func setupMonitoring() {
         self.errorMessage = "正在唤醒系统底层通讯..."
@@ -122,7 +125,8 @@ class MusicManager: ObservableObject {
                 if let floatChannelData = buffer.floatChannelData {
                     for channel in 0..<Int(format.channelCount) {
                         for frame in 0..<Int(buffer.frameLength) {
-                            floatChannelData[channel][frame] = 1e-6 
+                            // 稍微提高一丁点噪音级别，确保不被最新 iOS 系统忽略
+                            floatChannelData[channel][frame] = 1e-4 
                         }
                     }
                 }
@@ -130,20 +134,23 @@ class MusicManager: ObservableObject {
                 silencePlayer.play()
             }
             
-            NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
-                guard let self = self,
-                      let userInfo = notification.userInfo,
-                      let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                      let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-
-                if type == .ended {
+            // 🚨 终极心跳复苏：不管是谁掐断了我们的白噪音，每2秒强行重启一次！
+            heartbeatTimer?.invalidate()
+            // 必须挂在 common 模式下，防止后台定时器失效
+            let timer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+                guard let self = self else { return }
+                if !self.silenceEngine.isRunning {
                     do {
                         try AVAudioSession.sharedInstance().setActive(true)
                         try self.silenceEngine.start()
                         self.silencePlayer.play()
-                    } catch { print("自愈重启失败") }
+                        print("🫀 引擎被掐断，已成功自愈重启！")
+                    } catch { }
                 }
             }
+            RunLoop.main.add(timer, forMode: .common)
+            heartbeatTimer = timer
+            
         } catch { print("音频引擎故障") }
     }
 
@@ -151,7 +158,6 @@ class MusicManager: ObservableObject {
         masterLoopTask?.cancel()
         
         masterLoopTask = Task {
-            // 🚨 惯性导航系统核心变量
             var lastKnownSystemTime: TimeInterval = -1
             var inertialTime: TimeInterval = 0
             var lastTickDate = Date()
@@ -163,24 +169,18 @@ class MusicManager: ObservableObject {
                 let isPlaying = (self.musicPlayer.playbackState == .playing)
                 let systemTime = self.musicPlayer.currentPlaybackTime
                 
-                // ==========================================
-                // 🚀 第一步：惯性时钟推算 (无视后台冻结)
-                // ==========================================
+                // 惯性时钟
                 if !systemTime.isNaN {
-                    // 如果系统时间发生了明显变化（拖动了进度条，或者系统在前台）
                     if abs(systemTime - lastKnownSystemTime) > 0.001 {
                         inertialTime = systemTime
                         lastKnownSystemTime = systemTime
                     } else if isPlaying {
-                        // 🚨 此时系统时间卡死！App 进了后台，我们用自己的秒表往前加！
                         inertialTime += now.timeIntervalSince(lastTickDate)
                     }
                 }
                 lastTickDate = now
                 
-                // ==========================================
-                // 🚀 第二步：切歌监测
-                // ==========================================
+                // 切歌监测
                 if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                     self.currentSongName = rawTitle
                     self.currentLyricIndex = -1
@@ -194,12 +194,9 @@ class MusicManager: ObservableObject {
                     await self.fetchAndParseLyrics(title: rawTitle, artist: artist)
                 }
                 
-                // ==========================================
-                // 🚀 第三步：歌词滚动推送
-                // ==========================================
+                // 歌词滚动
                 if isPlaying {
                     if !self.parsedLyrics.isEmpty {
-                        // 使用我们的惯性时间进行滚动，+0.45 秒抵消传输延迟
                         let calculatedTime = inertialTime + 0.45
                         
                         var newIndex = -1
@@ -223,7 +220,6 @@ class MusicManager: ObservableObject {
                 
                 self.lastPlaybackState = self.musicPlayer.playbackState
                 
-                // 每 0.1 秒执行一次
                 try? await Task.sleep(nanoseconds: 100_000_000) 
             }
         }
@@ -352,6 +348,7 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         masterLoopTask?.cancel()
+        heartbeatTimer?.invalidate()
         if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
         currentSongName = ""
         purgeOrphanedActivities() 
