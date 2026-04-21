@@ -83,12 +83,18 @@ class MusicManager: ObservableObject {
     private var lastPlaybackState: MPMusicPlaybackState = .stopped
     private var engineTickCount = 0
     
+    // 🚨 灵动岛预算保护锁：记录最后一次更新的内容
+    private var lastUpdatedSongName = ""
+    private var lastUpdatedLyric = ""
+    
     private var audioPlayer: AVAudioPlayer?
     private var isFetchingLyrics = false // 防重入锁，保护后台网络
 
     func setupMonitoring() {
         self.errorMessage = "正在初始化底层驱动..."
         self.engineTickCount = 0
+        self.lastUpdatedSongName = ""
+        self.lastUpdatedLyric = ""
         purgeOrphanedActivities()
         configureBulletproofAudio()
         
@@ -117,7 +123,7 @@ class MusicManager: ObservableObject {
     
     private func configureBulletproofAudio() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay, .allowBluetooth])
             try AVAudioSession.sharedInstance().setActive(true)
             
             // 写入更安全的 Caches 文件夹，防止临时文件被系统意外清理
@@ -137,7 +143,10 @@ class MusicManager: ObservableObject {
             if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
                 buffer.frameLength = frameCount
                 if let int16ChannelData = buffer.int16ChannelData {
-                    for i in 0..<Int(frameCount) { int16ChannelData[0][i] = (i % 50 == 0) ? 1 : 0 }
+                    for i in 0..<Int(frameCount) {
+                        // 🚨 魔法改动：注入极微弱的白噪音 (人耳听不见)，彻底骗过 iOS 17 的静音检测进程杀手
+                        int16ChannelData[0][i] = Int16.random(in: -2...2)
+                    }
                 }
                 let file = try AVAudioFile(forWriting: fileURL, settings: settings)
                 try file.write(from: buffer)
@@ -145,7 +154,7 @@ class MusicManager: ObservableObject {
             
             audioPlayer = try AVAudioPlayer(contentsOf: fileURL)
             audioPlayer?.numberOfLoops = -1
-            audioPlayer?.volume = 0.05
+            audioPlayer?.volume = 0.01 // 极低音量
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
@@ -162,7 +171,7 @@ class MusicManager: ObservableObject {
         var inertialTime: TimeInterval = 0
         var lastTickDate = Date()
         
-        // 🚨 改用 DispatchSourceTimer，0.2秒一次 (5 FPS)，后台可靠性强
+        // 0.2秒一次 (5 FPS)，后台可靠性强
         let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInitiated)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(wallDeadline: .now(), repeating: 0.2)
@@ -193,7 +202,7 @@ class MusicManager: ObservableObject {
             }
             lastTickDate = now
             
-            // 🚨 切歌监测
+            // 切歌监测
             if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                 self.currentSongName = rawTitle
                 self.currentLyricIndex = -1
@@ -209,7 +218,6 @@ class MusicManager: ObservableObject {
                 // 启动安全网络请求
                 if !self.isFetchingLyrics {
                     self.isFetchingLyrics = true
-                    // 🚨 必须在主线程上启动网络任务，防止后台队列干扰
                     DispatchQueue.main.async {
                         Task {
                             let newLyrics = await self.downloadLyrics(title: rawTitle, artist: artist)
@@ -219,7 +227,6 @@ class MusicManager: ObservableObject {
                                     self.parsedLyrics = newLyrics
                                     if newLyrics.isEmpty {
                                         self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
-                                        // 不覆盖已有的错误信息，保持搜索日志
                                     } else {
                                         self.updateIsland(songName: rawTitle, lyric: newLyrics.first?.text ?? "")
                                         self.errorMessage = "✅ 歌词已就位 (\(newLyrics.count)行)"
@@ -248,7 +255,6 @@ class MusicManager: ObservableObject {
                         }
                     }
                 } else {
-                    // 🔍 诊断：为什么没有歌词
                     if self.engineTickCount % 10 == 0 {
                         DispatchQueue.main.async {
                             self.errorMessage = "⚠️ 歌词列表为空 | 时间: \(Int(inertialTime))s | 等待歌词..."
@@ -263,22 +269,17 @@ class MusicManager: ObservableObject {
             
             self.lastPlaybackState = self.musicPlayer.playbackState
             
-            // 心跳报告 + 保活更新 (每 10 次循环 = 2秒，避免系统限流)
+            // 心跳报告
             if self.engineTickCount % 10 == 0 {
                 let secondsAlive = self.engineTickCount / 5
                 
-                // 🚨 关键：每 2秒都主动刷新灵动岛的 staleDate
-                // 即使歌词没有更新，也要保活
+                // 此时 updateIsland 内部已做防重复拦截，可以安全调用以刷新 StaleDate
                 if !self.currentSongName.isEmpty {
                     if self.currentLyricIndex >= 0 && self.currentLyricIndex < self.parsedLyrics.count {
                         let currentText = self.parsedLyrics[self.currentLyricIndex].text
                         self.updateIsland(songName: self.currentSongName, lyric: currentText)
                     } else if !self.parsedLyrics.isEmpty {
-                        // 如果有歌词但索引不对，显示第一行
                         self.updateIsland(songName: self.currentSongName, lyric: self.parsedLyrics.first?.text ?? "")
-                    } else {
-                        // 没有歌词时也要保活
-                        self.updateIsland(songName: self.currentSongName, lyric: "⏳ 等待歌词...")
                     }
                 }
                 
@@ -290,7 +291,6 @@ class MusicManager: ObservableObject {
             }
         }
         
-        // 🚨 启动 GCD 定时器，后台比 Timer 更可靠
         timer.resume()
         self.masterTimer = timer
     }
@@ -301,25 +301,54 @@ class MusicManager: ObservableObject {
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
-        // 🔍 只在初始时显示一次搜索信息
         DispatchQueue.main.async { self.errorMessage = "🔍 搜索歌词中..." }
         
-        var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
+        // 🚨 优先使用网易云音乐接口 (目前最稳定)
+        var lrcString = await fetchLyricFromNetEase(keyword: "\(cleanTitle) \(artist)")
         
-        if lrcString.isEmpty {
-            lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle)
-        }
-        
-        if lrcString.isEmpty {
-            lrcString = await fetchLyricFromKugou(keyword: cleanTitle)
-        }
+        // 网易云没找到再找 QQ 和 酷狗
+        if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)") }
+        if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
+        if lrcString.isEmpty { lrcString = await fetchLyricFromKugou(keyword: cleanTitle) }
         
         let result = self.parseLRC(lrcString: lrcString)
-        // 只在最后一次更新最终结果
         if result.isEmpty {
             DispatchQueue.main.async { self.errorMessage = "❌ 无法获取歌词: \(cleanTitle)" }
         }
         return result
+    }
+
+    // 🚨 新增：网易云音乐 API (抓取成功率高)
+    func fetchLyricFromNetEase(keyword: String) async -> String {
+        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
+        let searchUrl = URL(string: "https://music.163.com/api/search/get/web?s=\(encoded)&type=1&limit=1")!
+        do {
+            var request = URLRequest(url: searchUrl)
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 10
+            let (searchData, _) = try await URLSession.shared.data(for: request)
+            guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
+                  let result = searchJson["result"] as? [String: Any],
+                  let songs = result["songs"] as? [[String: Any]],
+                  let firstSong = songs.first,
+                  let songId = firstSong["id"] as? Int else {
+                return ""
+            }
+            
+            let lyricUrl = URL(string: "https://music.163.com/api/song/lyric?id=\(songId)&lv=1&kv=1&tv=-1")!
+            var lyricReq = URLRequest(url: lyricUrl)
+            lyricReq.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            lyricReq.timeoutInterval = 10
+            let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
+            guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
+                  let lrc = lyricJson["lrc"] as? [String: Any],
+                  let lyricText = lrc["lyric"] as? String else {
+                return ""
+            }
+            return lyricText
+        } catch {
+            return ""
+        }
     }
 
     func fetchLyricFromQQMusic(keyword: String) async -> String {
@@ -411,6 +440,15 @@ class MusicManager: ObservableObject {
     }
 
     func updateIsland(songName: String, lyric: String) {
+        // 🚨 核心阻断：如果歌词和歌名都没变，千万不要调用更新！
+        // 苹果严格限制灵动岛高频更新，频繁提交一样的内容会在 30 秒内耗尽预算导致假死。
+        if songName == lastUpdatedSongName && lyric == lastUpdatedLyric {
+            return
+        }
+        
+        lastUpdatedSongName = songName
+        lastUpdatedLyric = lyric
+
         let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric, themeColorHex: currentThemeColor)
         Task {
             if currentActivity == nil {
@@ -422,25 +460,18 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        // 🚨 初始化时设置 staleDate 为 300秒后（5分钟）
                         let staleDate = Date().addingTimeInterval(300)
                         let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
-                        DispatchQueue.main.async {
-                            self.errorMessage = "🆕 灵动岛已创建"
-                        }
+                        DispatchQueue.main.async { self.errorMessage = "🆕 灵动岛已创建" }
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
                     }
                 } catch {
-                    DispatchQueue.main.async {
-                        self.errorMessage = "❌ 灵动岛创建失败: \(error.localizedDescription)"
-                    }
+                    DispatchQueue.main.async { self.errorMessage = "❌ 灵动岛创建失败: \(error.localizedDescription)" }
                 }
             } else {
                 if #available(iOS 16.2, *) {
-                    // 🚨 每次更新都极大地延长 staleDate 到 300秒后
-                    // 这样后台每秒刷新一次，灵动岛永远活着
                     let staleDate = Date().addingTimeInterval(300)
                     let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                     await currentActivity?.update(content)
@@ -456,6 +487,8 @@ class MusicManager: ObservableObject {
         masterTimer?.cancel()
         audioPlayer?.stop()
         currentSongName = ""
+        lastUpdatedSongName = ""
+        lastUpdatedLyric = ""
         purgeOrphanedActivities() 
         self.errorMessage = "已彻底停止并关闭"
     }
