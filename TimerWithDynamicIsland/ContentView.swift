@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "白噪音保活引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "终极主动轮询引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -59,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (纳米白噪音保活版)
+// 2. 核心大心脏 (主动轮询 Master Loop 版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -71,23 +71,26 @@ class MusicManager: ObservableObject {
     @Published var currentThemeColor: String = "#34C759"
     
     private var parsedLyrics: [LyricLine] = []
-    private var lyricSyncTask: Task<Void, Never>? 
+    
+    // 🚨 终极 Master Loop 任务
+    private var masterLoopTask: Task<Void, Never>? 
     private var currentLyricIndex = -1
     private var currentSongName = ""
+    private var lastPlaybackState: MPMusicPlaybackState = .stopped
     
     private let silenceEngine = AVAudioEngine()
     private let silencePlayer = AVAudioPlayerNode()
 
     func setupMonitoring() {
-        self.errorMessage = "正在注入微量白噪音..."
+        self.errorMessage = "正在启动终极引擎..."
         purgeOrphanedActivities()
         configureAudioSession()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 监听中，锁屏绝对不断流！"
-                    self.startListening()
+                    self.errorMessage = "✅ 引擎启动，无视系统拦截！"
+                    self.startMasterLoop()
                 } else {
                     self.errorMessage = "❌ 被拒绝访问 Apple Music"
                 }
@@ -104,7 +107,6 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 🚨 终极黑科技：纳米级白噪音注入器
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
@@ -117,112 +119,99 @@ class MusicManager: ObservableObject {
             
             if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100) {
                 buffer.frameLength = 44100
-                
-                // 🚨 核心破解：给缓冲液注入听不见的极其微弱的浮点数噪音
-                // 这样 iOS 就不会认为你是绝对静音而把你的后台杀掉！
                 if let floatChannelData = buffer.floatChannelData {
                     for channel in 0..<Int(format.channelCount) {
                         for frame in 0..<Int(buffer.frameLength) {
-                            floatChannelData[channel][frame] = 1e-6 // 0.000001 音量
+                            floatChannelData[channel][frame] = 1e-6 // 纳米白噪音保活
                         }
                     }
                 }
-                
                 silencePlayer.scheduleBuffer(buffer, at: nil, options: .loops)
                 silencePlayer.play()
             }
         } catch { print("音频引擎故障") }
     }
 
-    private func startListening() {
-        musicPlayer.beginGeneratingPlaybackNotifications()
-        NotificationCenter.default.addObserver(self, selector: #selector(systemDidReportChange), name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(systemDidReportChange), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: nil)
-        systemDidReportChange()
-    }
-    
-    @objc func systemDidReportChange() {
-        DispatchQueue.main.async { self.evaluateRealState() }
+    // ------------------------------------------
+    // 🚨 核心破解：抛弃所有被动监听，启动主动轮询
+    // ------------------------------------------
+    private func startMasterLoop() {
+        masterLoopTask?.cancel()
+        
+        masterLoopTask = Task {
+            while !Task.isCancelled {
+                let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
+                let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
+                let isPlaying = (self.musicPlayer.playbackState == .playing)
+                
+                // 1. 主动发现切歌
+                if !rawTitle.isEmpty && rawTitle != self.currentSongName {
+                    self.currentSongName = rawTitle
+                    self.currentLyricIndex = -1
+                    
+                    // 提取封面颜色
+                    if let artwork = self.musicPlayer.nowPlayingItem?.artwork,
+                       let image = artwork.image(at: CGSize(width: 50, height: 50)) {
+                        DispatchQueue.main.async { self.currentThemeColor = image.averageColorHex() ?? "#34C759" }
+                    }
+                    
+                    self.updateIsland(songName: rawTitle, lyric: "🎵 匹配歌词中...")
+                    
+                    // 挂起当前线程去搜歌词，搜完再继续循环
+                    await self.fetchAndParseLyrics(title: rawTitle, artist: artist)
+                }
+                
+                // 2. 主动发现暂停/恢复，并推送灵动岛
+                if isPlaying {
+                    // 如果正在播放，同步滚动歌词
+                    if !self.parsedLyrics.isEmpty {
+                        let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
+                        if !currentTime.isNaN {
+                            var newIndex = -1
+                            for (index, line) in self.parsedLyrics.enumerated() {
+                                if currentTime >= line.time { newIndex = index } else { break }
+                            }
+                            
+                            // 只有歌词真正变化时才刷新灵动岛
+                            if newIndex != self.currentLyricIndex && newIndex >= 0 {
+                                self.currentLyricIndex = newIndex
+                                let currentText = self.parsedLyrics[newIndex].text
+                                if !currentText.isEmpty {
+                                    self.updateIsland(songName: self.currentSongName, lyric: currentText)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // 如果暂停了，且之前没显示过暂停，就更新一次灵动岛
+                    if self.lastPlaybackState == .playing {
+                        self.updateIsland(songName: rawTitle.isEmpty ? "等待音乐" : rawTitle, lyric: "⏸ 已暂停播放")
+                    }
+                }
+                
+                // 记录状态
+                self.lastPlaybackState = self.musicPlayer.playbackState
+                
+                // 🚨 每 0.1 秒循环一次！这是 App 在后台唯一的心跳！
+                try? await Task.sleep(nanoseconds: 100_000_000) 
+            }
+        }
     }
 
-    private func evaluateRealState() {
-        let rawTitle = musicPlayer.nowPlayingItem?.title ?? ""
-        let artist = musicPlayer.nowPlayingItem?.artist ?? ""
-        let isPlaying = (musicPlayer.playbackState == .playing)
-        
-        if let artwork = musicPlayer.nowPlayingItem?.artwork,
-           let image = artwork.image(at: CGSize(width: 50, height: 50)) {
-            self.currentThemeColor = image.averageColorHex() ?? "#34C759"
-        } else {
-            self.currentThemeColor = "#34C759"
-        }
-        
-        if !rawTitle.isEmpty && rawTitle != currentSongName {
-            self.currentSongName = rawTitle
-            self.fetchAndStart(title: rawTitle, artist: artist)
-            return
-        }
-        
-        if isPlaying {
-            if !parsedLyrics.isEmpty { startLyricSyncTask(songName: rawTitle) }
-        } else {
-            lyricSyncTask?.cancel()
-            if !rawTitle.isEmpty { updateIsland(songName: rawTitle, lyric: "⏸ 已暂停播放") }
-        }
-    }
-
-    private func fetchAndStart(title: String, artist: String) {
-        lyricSyncTask?.cancel()
-        parsedLyrics = []
-        currentLyricIndex = -1
-        updateIsland(songName: title, lyric: "🎵 秒速匹配中...")
-        
+    private func fetchAndParseLyrics(title: String, artist: String) async {
+        self.parsedLyrics = []
         var cleanTitle = title
         if let idx = cleanTitle.firstIndex(of: "(") { cleanTitle = String(cleanTitle[..<idx]) }
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
-        Task {
-            var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
-            if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
-            
-            self.parsedLyrics = self.parseLRC(lrcString: lrcString)
-            
-            DispatchQueue.main.async {
-                if self.parsedLyrics.isEmpty {
-                    self.updateIsland(songName: title, lyric: "❌ 无滚动歌词")
-                } else {
-                    if self.musicPlayer.playbackState == .playing {
-                        self.startLyricSyncTask(songName: title)
-                    }
-                }
-            }
-        }
-    }
-
-    func startLyricSyncTask(songName: String) {
-        lyricSyncTask?.cancel()
-        lyricSyncTask = Task {
-            while !Task.isCancelled {
-                let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
-                
-                if !currentTime.isNaN {
-                    var newIndex = -1
-                    for (index, line) in self.parsedLyrics.enumerated() {
-                        if currentTime >= line.time { newIndex = index } else { break }
-                    }
-                    
-                    if newIndex != self.currentLyricIndex && newIndex >= 0 && !Task.isCancelled {
-                        self.currentLyricIndex = newIndex
-                        let currentText = self.parsedLyrics[newIndex].text
-                        if !currentText.isEmpty {
-                            self.updateIsland(songName: songName, lyric: currentText)
-                        }
-                    }
-                }
-                
-                try? await Task.sleep(nanoseconds: 100_000_000) 
-            }
+        var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
+        if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
+        
+        self.parsedLyrics = self.parseLRC(lrcString: lrcString)
+        
+        if self.parsedLyrics.isEmpty {
+            self.updateIsland(songName: title, lyric: "❌ 无滚动歌词")
         }
     }
 
@@ -312,12 +301,8 @@ class MusicManager: ObservableObject {
     }
     
     func stopEverything() {
-        musicPlayer.endGeneratingPlaybackNotifications()
-        NotificationCenter.default.removeObserver(self)
-        lyricSyncTask?.cancel()
-        
+        masterLoopTask?.cancel()
         if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
-        
         currentSongName = ""
         purgeOrphanedActivities() 
         self.errorMessage = "已彻底停止并关闭"
