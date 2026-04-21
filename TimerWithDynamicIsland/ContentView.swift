@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "双核不死幻彩引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "惯性导航引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -84,8 +84,6 @@ class MusicManager: ObservableObject {
         purgeOrphanedActivities()
         configureAudioSession()
         
-        // 🚨 核心修复：强制唤醒 iOS 底层音乐进程通讯 (IPC)
-        // 没有这句，App 退后台后 nowPlayingItem 就成了死水一潭！
         musicPlayer.beginGeneratingPlaybackNotifications()
         
         MPMediaLibrary.requestAuthorization { status in
@@ -146,7 +144,6 @@ class MusicManager: ObservableObject {
                     } catch { print("自愈重启失败") }
                 }
             }
-            
         } catch { print("音频引擎故障") }
     }
 
@@ -154,12 +151,36 @@ class MusicManager: ObservableObject {
         masterLoopTask?.cancel()
         
         masterLoopTask = Task {
+            // 🚨 惯性导航系统核心变量
+            var lastKnownSystemTime: TimeInterval = -1
+            var inertialTime: TimeInterval = 0
+            var lastTickDate = Date()
+            
             while !Task.isCancelled {
-                // 因为有了 beginGeneratingPlaybackNotifications，这里的数据终于能在后台实时更新了！
+                let now = Date()
                 let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
                 let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
                 let isPlaying = (self.musicPlayer.playbackState == .playing)
+                let systemTime = self.musicPlayer.currentPlaybackTime
                 
+                // ==========================================
+                // 🚀 第一步：惯性时钟推算 (无视后台冻结)
+                // ==========================================
+                if !systemTime.isNaN {
+                    // 如果系统时间发生了明显变化（拖动了进度条，或者系统在前台）
+                    if abs(systemTime - lastKnownSystemTime) > 0.001 {
+                        inertialTime = systemTime
+                        lastKnownSystemTime = systemTime
+                    } else if isPlaying {
+                        // 🚨 此时系统时间卡死！App 进了后台，我们用自己的秒表往前加！
+                        inertialTime += now.timeIntervalSince(lastTickDate)
+                    }
+                }
+                lastTickDate = now
+                
+                // ==========================================
+                // 🚀 第二步：切歌监测
+                // ==========================================
                 if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                     self.currentSongName = rawTitle
                     self.currentLyricIndex = -1
@@ -173,21 +194,24 @@ class MusicManager: ObservableObject {
                     await self.fetchAndParseLyrics(title: rawTitle, artist: artist)
                 }
                 
+                // ==========================================
+                // 🚀 第三步：歌词滚动推送
+                // ==========================================
                 if isPlaying {
                     if !self.parsedLyrics.isEmpty {
-                        let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
-                        if !currentTime.isNaN {
-                            var newIndex = -1
-                            for (index, line) in self.parsedLyrics.enumerated() {
-                                if currentTime >= line.time { newIndex = index } else { break }
-                            }
-                            
-                            if newIndex != self.currentLyricIndex && newIndex >= 0 {
-                                self.currentLyricIndex = newIndex
-                                let currentText = self.parsedLyrics[newIndex].text
-                                if !currentText.isEmpty {
-                                    self.updateIsland(songName: self.currentSongName, lyric: currentText)
-                                }
+                        // 使用我们的惯性时间进行滚动，+0.45 秒抵消传输延迟
+                        let calculatedTime = inertialTime + 0.45
+                        
+                        var newIndex = -1
+                        for (index, line) in self.parsedLyrics.enumerated() {
+                            if calculatedTime >= line.time { newIndex = index } else { break }
+                        }
+                        
+                        if newIndex != self.currentLyricIndex && newIndex >= 0 {
+                            self.currentLyricIndex = newIndex
+                            let currentText = self.parsedLyrics[newIndex].text
+                            if !currentText.isEmpty {
+                                self.updateIsland(songName: self.currentSongName, lyric: currentText)
                             }
                         }
                     }
@@ -198,6 +222,8 @@ class MusicManager: ObservableObject {
                 }
                 
                 self.lastPlaybackState = self.musicPlayer.playbackState
+                
+                // 每 0.1 秒执行一次
                 try? await Task.sleep(nanoseconds: 100_000_000) 
             }
         }
@@ -210,7 +236,6 @@ class MusicManager: ObservableObject {
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
-        // 🚨 双核搜词系统：QQ 不行就上酷狗，确保 100% 抓到
         var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
         
@@ -225,7 +250,6 @@ class MusicManager: ObservableObject {
         }
     }
 
-    // 引擎 1：QQ音乐
     func fetchLyricFromQQMusic(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(encoded)&format=json")!
@@ -252,7 +276,6 @@ class MusicManager: ObservableObject {
         } catch { return "" }
     }
 
-    // 引擎 2：酷狗音乐保底
     func fetchLyricFromKugou(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(encoded)&page=1&pagesize=1")!
@@ -327,7 +350,6 @@ class MusicManager: ObservableObject {
     }
     
     func stopEverything() {
-        // 🚨 关闭唤醒
         musicPlayer.endGeneratingPlaybackNotifications()
         masterLoopTask?.cancel()
         if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
