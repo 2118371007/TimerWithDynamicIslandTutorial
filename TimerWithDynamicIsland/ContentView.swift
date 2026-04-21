@@ -10,14 +10,14 @@ struct LyricLine {
 }
 
 // ==========================================
-// 1. UI 界面
+// 1. UI 界面 (带全息诊断面板)
 // ==========================================
 struct ContentView: View {
     @State private var isMonitoring = false
     @ObservedObject var musicManager = MusicManager.shared
     
     var body: some View {
-        VStack(spacing: 30) {
+        VStack(spacing: 20) {
             Image(systemName: isMonitoring ? "music.note.house.fill" : "music.note.house")
                 .resizable()
                 .scaledToFit()
@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "物理级防杀引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "防弹级不死引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -46,20 +46,26 @@ struct ContentView: View {
                     .padding(.horizontal, 40)
             }
             
-            if !musicManager.errorMessage.isEmpty {
+            // 🚨 全息诊断面板：让你清清楚楚看到 App 的生死状态
+            VStack(spacing: 8) {
+                Text("【系统诊断日志】")
+                    .font(.caption).bold().foregroundColor(.gray)
                 Text(musicManager.errorMessage)
                     .foregroundColor(musicManager.errorMessage.contains("❌") ? .red : .green)
                     .font(.footnote)
                     .multilineTextAlignment(.center)
-                    .padding()
             }
+            .padding()
+            .background(Color.black.opacity(0.05))
+            .cornerRadius(10)
+            .padding(.horizontal, 20)
         }
-        .padding()
+        .padding(.vertical)
     }
 }
 
 // ==========================================
-// 2. 核心大心脏 (物理文件保活版)
+// 2. 核心大心脏 (移除网络限制 + 音频降级保活)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -67,21 +73,20 @@ class MusicManager: ObservableObject {
     private var musicPlayer = MPMusicPlayerController.systemMusicPlayer
     private var currentActivity: Activity<TimerWidgetAttributes>? = nil
     
-    @Published var errorMessage: String = ""
+    @Published var errorMessage: String = "等待启动..."
     @Published var currentThemeColor: String = "#34C759"
     
     private var parsedLyrics: [LyricLine] = []
     private var masterLoopTask: Task<Void, Never>? 
     private var currentLyricIndex = -1
     private var currentSongName = ""
-    private var lastPlaybackState: MPMusicPlaybackState = .stopped
     private var engineTickCount = 0
     
-    // 🚨 终极核武器：物理文件播放器
+    // 🚨 使用最基础的 AVAudioPlayer 保活，绝不崩溃
     private var audioPlayer: AVAudioPlayer?
 
     func setupMonitoring() {
-        self.errorMessage = "正在生成物理保活文件..."
+        self.errorMessage = "正在初始化底层驱动..."
         self.engineTickCount = 0
         purgeOrphanedActivities()
         configureBulletproofAudio()
@@ -91,10 +96,10 @@ class MusicManager: ObservableObject {
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 引擎启动，彻底免疫 23 秒断流！"
+                    self.errorMessage = "✅ 权限通过，启动主循环！"
                     self.startMasterLoop()
                 } else {
-                    self.errorMessage = "❌ 被拒绝访问 Apple Music"
+                    self.errorMessage = "❌ 致命错误：被拒绝访问 Apple Music"
                 }
             }
         }
@@ -109,13 +114,12 @@ class MusicManager: ObservableObject {
         }
     }
     
-    // 🚨 核心破解：动态生成含有“微量白噪音”的物理 WAV 文件并循环播放
+    // 🚨 物理级静音音频生成器 (加了详细报错)
     private func configureBulletproofAudio() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            // 1. 在手机临时文件夹创建一个 silence.wav
             let fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("silence_keepalive.wav")
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatLinearPCM),
@@ -127,43 +131,29 @@ class MusicManager: ObservableObject {
                 AVLinearPCMIsBigEndianKey: false
             ]
             
-            // 2. 写入 10 秒钟的数据，并在里面掺杂机器听得见、人听不见的噪音
             let format = AVAudioFormat(settings: settings)!
-            let frameCount = AVAudioFrameCount(44100 * 10) // 10秒
+            let frameCount = AVAudioFrameCount(44100 * 5) // 5秒循环
             if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
                 buffer.frameLength = frameCount
                 if let int16ChannelData = buffer.int16ChannelData {
                     for i in 0..<Int(frameCount) {
-                        // 每 100 个采样点塞入一个极其微弱的信号，防止被系统判定为无效静音
-                        int16ChannelData[0][i] = (i % 100 == 0) ? 1 : 0
+                        int16ChannelData[0][i] = (i % 50 == 0) ? 1 : 0 // 极弱白噪音
                     }
                 }
-                
                 let file = try AVAudioFile(forWriting: fileURL, settings: settings)
                 try file.write(from: buffer)
             }
             
-            // 3. 用最稳健的 AVAudioPlayer 播放这个物理文件
             audioPlayer = try AVAudioPlayer(contentsOf: fileURL)
-            audioPlayer?.numberOfLoops = -1 // 无限循环
-            audioPlayer?.volume = 0.01 // 极低音量
+            audioPlayer?.numberOfLoops = -1
+            audioPlayer?.volume = 0.05
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
-            // 🚨 接电话/看视频打断后的自愈机制
-            NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
-                guard let self = self,
-                      let userInfo = notification.userInfo,
-                      let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-                      let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-
-                if type == .ended {
-                    try? AVAudioSession.sharedInstance().setActive(true)
-                    self.audioPlayer?.play()
-                }
-            }
-            
-        } catch { print("物理保活音频生成失败") }
+            DispatchQueue.main.async { self.errorMessage = "✅ 物理音频引擎挂载成功" }
+        } catch {
+            DispatchQueue.main.async { self.errorMessage = "❌ 音频引擎崩溃: \(error.localizedDescription)" }
+        }
     }
 
     private func startMasterLoop() {
@@ -182,13 +172,13 @@ class MusicManager: ObservableObject {
                 let isPlaying = (self.musicPlayer.playbackState == .playing)
                 let systemTime = self.musicPlayer.currentPlaybackTime
                 
-                // 🚨 强心针：如果播放器被 Apple Music 冲掉了，瞬间重启！
+                // 保活防坠毁
                 if self.audioPlayer?.isPlaying == false {
                     try? AVAudioSession.sharedInstance().setActive(true)
                     self.audioPlayer?.play()
                 }
                 
-                // 1. 惯性时钟推算
+                // 惯性时钟推算
                 if !systemTime.isNaN {
                     if abs(systemTime - lastKnownSystemTime) > 0.001 {
                         inertialTime = systemTime
@@ -199,7 +189,7 @@ class MusicManager: ObservableObject {
                 }
                 lastTickDate = now
                 
-                // 2. 切歌监测 
+                // 切歌监测 (防止空歌名乱搜)
                 if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                     self.currentSongName = rawTitle
                     self.currentLyricIndex = -1
@@ -210,20 +200,24 @@ class MusicManager: ObservableObject {
                         DispatchQueue.main.async { self.currentThemeColor = image.averageColorHex() ?? "#34C759" }
                     }
                     
-                    self.updateIsland(songName: rawTitle, lyric: "🎵 匹配歌词中...")
+                    self.updateIsland(songName: rawTitle, lyric: "🎵 正在连网抓取歌词...")
                     
+                    // 独立拉取数据，绝不阻塞主线程
                     Task {
                         let newLyrics = await self.downloadLyrics(title: rawTitle, artist: artist)
                         if self.currentSongName == rawTitle {
                             self.parsedLyrics = newLyrics
                             if newLyrics.isEmpty {
-                                self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
+                                self.updateIsland(songName: rawTitle, lyric: "❌ 题库中无此歌词")
+                                DispatchQueue.main.async { self.errorMessage = "❌ 搜词失败: \(rawTitle)" }
+                            } else {
+                                DispatchQueue.main.async { self.errorMessage = "✅ 歌词抓取成功！" }
                             }
                         }
                     }
                 }
                 
-                // 3. 歌词滚动推送
+                // 歌词推送
                 if isPlaying {
                     if !self.parsedLyrics.isEmpty {
                         let calculatedTime = inertialTime + 0.45
@@ -241,18 +235,18 @@ class MusicManager: ObservableObject {
                         }
                     }
                 } else {
-                    if self.lastPlaybackState == .playing {
-                        self.updateIsland(songName: rawTitle.isEmpty ? "等待音乐" : rawTitle, lyric: "⏸ 已暂停播放")
+                    if !rawTitle.isEmpty {
+                        self.updateIsland(songName: rawTitle, lyric: "⏸ 已暂停播放")
                     }
                 }
                 
-                self.lastPlaybackState = self.musicPlayer.playbackState
-                
-                // 4. 心跳 UI 反馈
+                // 心跳报告 (每 1 秒更新一次存活时间)
                 if self.engineTickCount % 10 == 0 {
                     let secondsAlive = self.engineTickCount / 10
                     DispatchQueue.main.async {
-                        self.errorMessage = "✅ 物理引擎存活: \(secondsAlive) 秒"
+                        if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") {
+                            self.errorMessage = "✅ 后台存活: \(secondsAlive) 秒 | 播放状态: \(isPlaying ? "播放" : "暂停")"
+                        }
                     }
                 }
                 
@@ -261,6 +255,7 @@ class MusicManager: ObservableObject {
         }
     }
 
+    // 🚨 移除了超时限制，给接口足够的响应时间
     private func downloadLyrics(title: String, artist: String) async -> [LyricLine] {
         var cleanTitle = title
         if let idx = cleanTitle.firstIndex(of: "(") { cleanTitle = String(cleanTitle[..<idx]) }
@@ -278,7 +273,7 @@ class MusicManager: ObservableObject {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(encoded)&format=json")!
         do {
-            var request = URLRequest(url: searchUrl, timeoutInterval: 3.0) 
+            var request = URLRequest(url: searchUrl)
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let (searchData, _) = try await URLSession.shared.data(for: request)
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
@@ -289,7 +284,7 @@ class MusicManager: ObservableObject {
                   let songmid = first["songmid"] as? String else { return "" }
             
             let lyricUrl = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json")!
-            var lyricReq = URLRequest(url: lyricUrl, timeoutInterval: 3.0)
+            var lyricReq = URLRequest(url: lyricUrl)
             lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer") 
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
@@ -304,7 +299,7 @@ class MusicManager: ObservableObject {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(encoded)&page=1&pagesize=1")!
         do {
-            var request = URLRequest(url: searchUrl, timeoutInterval: 3.0)
+            var request = URLRequest(url: searchUrl)
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let (searchData, _) = try await URLSession.shared.data(for: request)
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
