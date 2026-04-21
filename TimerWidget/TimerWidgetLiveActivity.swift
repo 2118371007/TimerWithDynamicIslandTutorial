@@ -11,17 +11,18 @@ struct TimerWidgetLiveActivity: Widget {
             VStack(spacing: 8) {
                 Text(context.state.songName)
                     .font(.headline)
-                    .foregroundColor(.white.opacity(0.8)) // 歌名稍微变淡，突出歌词
+                    .foregroundColor(.white.opacity(0.8))
                 
                 Text(context.state.lyric)
-                    .font(.title3.bold()) // 锁屏状态下歌词稍微放大加粗
+                    .font(.title3.bold())
                     .foregroundColor(.green)
                     .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.8)
+                    // 🚨 优化点：放宽到3行，允许极限缩小到40%
+                    .lineLimit(3)
+                    .minimumScaleFactor(0.4)
+                    .fixedSize(horizontal: false, vertical: true) // 强制垂直方向自适应撑开
             }
             .padding()
-            // 🚨 核心修复：已经删除了原有的黑色背景，现在将完美融入 iOS 系统毛玻璃！
             
         } dynamicIsland: { context in
             DynamicIsland {
@@ -38,16 +39,18 @@ struct TimerWidgetLiveActivity: Widget {
                     Text(context.state.songName)
                         .font(.headline)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.6)
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     Text(context.state.lyric)
                         .font(.title3)
                         .foregroundColor(.green)
                         .multilineTextAlignment(.center)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.6)
-                        .padding(.bottom, 8)
-                        .padding(.horizontal, 10)
+                        // 🚨 优化点：放宽到3行，极限缩小，并增加横向边距防止贴边
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.4)
+                        .padding(.bottom, 10)
+                        .padding(.horizontal, 5)
                 }
             } compactLeading: {
                 // ==========================================
@@ -57,16 +60,18 @@ struct TimerWidgetLiveActivity: Widget {
                     .foregroundColor(.blue)
             } compactTrailing: {
                 // ==========================================
-                // 4. 灵动岛【收缩】状态（右侧）- 🚨 见缝插针黑科技！
+                // 4. 灵动岛【收缩】状态（右侧）
                 // ==========================================
                 Text(context.state.lyric)
-                    .font(.system(size: 11, weight: .medium)) // 必须极小才能塞进胶囊
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundColor(.green)
-                    .frame(maxWidth: 120, alignment: .trailing) // 限制宽度防止把岛撑破
+                    // 🚨 优化点：稍微拓宽胶囊空间，并允许字体极限缩小挤进去
+                    .frame(maxWidth: 140, alignment: .trailing)
                     .lineLimit(1)
+                    .minimumScaleFactor(0.5) 
             } minimal: {
                 // ==========================================
-                // 5. 极简状态（当同时有导航、录音等多个任务抢占灵动岛时）
+                // 5. 极简状态
                 // ==========================================
                 Image(systemName: "music.note")
                     .foregroundColor(.green)

@@ -2,6 +2,7 @@ import SwiftUI
 import MediaPlayer
 import ActivityKit
 import Foundation
+import AVFoundation // 🚨 引入音频底层库
 
 struct LyricLine {
     let time: TimeInterval
@@ -24,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(isMonitoring ? .green : .gray)
                 .shadow(color: isMonitoring ? .green.opacity(0.5) : .clear, radius: 10)
             
-            Text(isMonitoring ? "零延迟 QQ 引擎已启动" : "歌词同步已关闭")
+            Text(isMonitoring ? "零延迟无限后台引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -58,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 核心引擎 (零延迟秒切 + QQ音乐主导)
+// 核心引擎
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -72,13 +73,22 @@ class MusicManager: ObservableObject {
     private var lyricTimer: Timer?
     private var currentLyricIndex = -1
     private var currentSongName = ""
+    
+    // 🚨 后台静音心脏起搏器
+    private let silenceEngine = AVAudioEngine()
+    private let silencePlayer = AVAudioPlayerNode()
 
     func setupMonitoring() {
         self.errorMessage = "正在请求权限..."
+        
+        // 1. 启动静音引擎保活
+        startBackgroundHeartbeat()
+        
+        // 2. 请求音乐权限
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 权限获取，监听中..."
+                    self.errorMessage = "✅ 监听中，退后台不掉线！"
                     self.startListening()
                 } else {
                     self.errorMessage = "❌ 被拒绝访问"
@@ -87,18 +97,40 @@ class MusicManager: ObservableObject {
         }
     }
     
+    // ==========================================
+    // 🚨 核心黑科技：无限后台存活引擎
+    // ==========================================
+    private func startBackgroundHeartbeat() {
+        do {
+            // 设置混音模式，绝对不打断 Apple Music
+            try AVAudioSession.sharedInstance().setCategory(.playback, options: .mixWithOthers)
+            try AVAudioSession.sharedInstance().setActive(true)
+            
+            silenceEngine.attach(silencePlayer)
+            let format = silenceEngine.outputNode.inputFormat(forBus: 0)
+            silenceEngine.connect(silencePlayer, to: silenceEngine.outputNode, format: format)
+            try silenceEngine.start()
+            
+            // 制造一段纯静音的音频缓冲液并无限循环播放，骗过系统！
+            if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100) {
+                buffer.frameLength = 44100
+                silencePlayer.scheduleBuffer(buffer, at: nil, options: .loops)
+                silencePlayer.play()
+            }
+        } catch {
+            print("后台保活引擎启动失败")
+        }
+    }
+
     private func startListening() {
         musicPlayer.beginGeneratingPlaybackNotifications()
-        // 🚨 统一监听口，不再等待 0.5 秒，实现零延迟响应
         NotificationCenter.default.addObserver(self, selector: #selector(systemDidReportChange), name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(systemDidReportChange), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: nil)
         systemDidReportChange()
     }
     
     @objc func systemDidReportChange() {
-        DispatchQueue.main.async {
-            self.evaluateRealState()
-        }
+        DispatchQueue.main.async { self.evaluateRealState() }
     }
 
     private func evaluateRealState() {
@@ -106,14 +138,12 @@ class MusicManager: ObservableObject {
         let artist = musicPlayer.nowPlayingItem?.artist ?? ""
         let isPlaying = (musicPlayer.playbackState == .playing)
         
-        // 1. 优先判断是否切了新歌（不等播放状态，只要歌名变了瞬间开搜）
         if !rawTitle.isEmpty && rawTitle != currentSongName {
             self.currentSongName = rawTitle
             self.fetchAndStart(title: rawTitle, artist: artist)
             return
         }
         
-        // 2. 如果没切歌，仅仅是暂停或恢复
         if isPlaying {
             if !parsedLyrics.isEmpty { startLyricSyncTimer(songName: rawTitle) }
         } else {
@@ -122,25 +152,19 @@ class MusicManager: ObservableObject {
         }
     }
 
-    // 独立出搜词逻辑
     private func fetchAndStart(title: String, artist: String) {
         lyricTimer?.invalidate()
         parsedLyrics = []
         currentLyricIndex = -1
-        
         updateIsland(songName: title, lyric: "🎵 秒速匹配中...")
         
-        // 名字净化器
         var cleanTitle = title
         if let idx = cleanTitle.firstIndex(of: "(") { cleanTitle = String(cleanTitle[..<idx]) }
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
         Task {
-            // 🚨 强制使用破解版的 QQ 音乐 API 搜词 (保周杰伦)
             var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
-            
-            // 备用降落伞
             if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
             
             self.parsedLyrics = self.parseLRC(lrcString: lrcString)
@@ -159,13 +183,9 @@ class MusicManager: ObservableObject {
 
     func startLyricSyncTimer(songName: String) {
         lyricTimer?.invalidate()
-        // 将刷新频率提高，确保动画丝滑
         lyricTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            
-            // 🚨 核心提前量算法：系统时间 + 0.4秒，抵消苹果底层跨进程的延迟！
-            let currentTime = self.musicPlayer.currentPlaybackTime + 0.4
-            
+            let currentTime = self.musicPlayer.currentPlaybackTime + 0.4 // 抵消延迟
             if currentTime.isNaN { return }
             
             var newIndex = -1
@@ -183,12 +203,8 @@ class MusicManager: ObservableObject {
         }
     }
 
-    // ==========================================
-    // 🚨 完美破解版 QQ 音乐 API
-    // ==========================================
     func fetchLyricFromQQMusic(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
-        // 强制 format=json 屏蔽 callback 脏数据
         let searchUrl = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(encoded)&format=json")!
         
         do {
@@ -196,7 +212,6 @@ class MusicManager: ObservableObject {
             request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
             let (searchData, _) = try await URLSession.shared.data(for: request)
             
-            // 纯净 JSON 解析
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
                   let dataMap = searchJson["data"] as? [String: Any],
                   let songMap = dataMap["song"] as? [String: Any],
@@ -204,10 +219,9 @@ class MusicManager: ObservableObject {
                   let first = list.first,
                   let songmid = first["songmid"] as? String else { return "" }
             
-            // 获取歌词
             let lyricUrl = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json")!
             var lyricReq = URLRequest(url: lyricUrl)
-            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer") // 核心防盗链破解
+            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer")
             
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
@@ -219,25 +233,31 @@ class MusicManager: ObservableObject {
         } catch { return "" }
     }
 
+    // ==========================================
+    // 🚨 核心黑科技 2：超强正则扫描仪 (无视面条代码)
+    // ==========================================
     func parseLRC(lrcString: String) -> [LyricLine] {
         var lines: [LyricLine] = []
-        let components = lrcString.components(separatedBy: .newlines)
-        let pattern = "\\[(\\d{2,}):(\\d{2}\\.\\d{2,3})\\](.*)"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return lines }
+        // 不再用 \n 切割，而是直接全局匹配 [时间]后面跟着的任意字符，直到下一个 [ 出现
+        let pattern = "\\[(\\d{2,}):(\\d{2}(?:\\.\\d+)?)\\]([^\\[]*)"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .dotMatchesLineSeparators) else { return lines }
         
-        for line in components {
-            let range = NSRange(location: 0, length: line.utf16.count)
-            if let match = regex.firstMatch(in: line, options: [], range: range) {
-                if let min = Double(String(line[Range(match.range(at: 1), in: line)!])),
-                   let sec = Double(String(line[Range(match.range(at: 2), in: line)!])) {
-                    let text = String(line[Range(match.range(at: 3), in: line)!])
-                        // 处理 QQ 音乐特有的 HTML 转义字符
-                        .replacingOccurrences(of: "&#32;", with: " ")
-                        .replacingOccurrences(of: "&#40;", with: "(")
-                        .replacingOccurrences(of: "&#41;", with: ")")
-                        .replacingOccurrences(of: "&#45;", with: "-")
-                        .replacingOccurrences(of: "\r", with: "")
-                        .trimmingCharacters(in: .whitespaces)
+        let nsString = lrcString as NSString
+        let results = regex.matches(in: lrcString, options: [], range: NSRange(location: 0, length: nsString.length))
+        
+        for match in results {
+            let minStr = nsString.substring(with: match.range(at: 1))
+            let secStr = nsString.substring(with: match.range(at: 2))
+            var text = nsString.substring(with: match.range(at: 3))
+            
+            if let min = Double(minStr), let sec = Double(secStr) {
+                text = text.replacingOccurrences(of: "&#32;", with: " ")
+                           .replacingOccurrences(of: "&#40;", with: "(")
+                           .replacingOccurrences(of: "&#41;", with: ")")
+                           .replacingOccurrences(of: "&#45;", with: "-")
+                           .trimmingCharacters(in: .whitespacesAndNewlines) // 彻底清扫回车和空格
+                
+                if !text.isEmpty {
                     lines.append(LyricLine(time: (min * 60) + sec, text: text))
                 }
             }
@@ -247,7 +267,6 @@ class MusicManager: ObservableObject {
 
     func updateIsland(songName: String, lyric: String) {
         let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric)
-        
         Task {
             if currentActivity == nil {
                 do {
@@ -257,7 +276,6 @@ class MusicManager: ObservableObject {
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
                     }
-                    DispatchQueue.main.async { self.errorMessage = "✅ 同步中：\(songName)" }
                 } catch {}
             } else {
                 if #available(iOS 16.2, *) {
@@ -274,6 +292,13 @@ class MusicManager: ObservableObject {
         musicPlayer.endGeneratingPlaybackNotifications()
         NotificationCenter.default.removeObserver(self)
         lyricTimer?.invalidate()
+        
+        // 🚨 停止心脏起搏器
+        if silenceEngine.isRunning {
+            silencePlayer.stop()
+            silenceEngine.stop()
+        }
+        
         currentSongName = ""
         Task {
             await currentActivity?.end(dismissalPolicy: .immediate)
