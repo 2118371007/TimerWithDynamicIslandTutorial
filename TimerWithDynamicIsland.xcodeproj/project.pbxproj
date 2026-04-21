@@ -398,6 +398,7 @@
 				INFOPLIST_KEY_UIBackgroundModes = (
 					audio,
 				);
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"TimerWithDynamicIsland/Preview Content\"";
@@ -434,6 +435,7 @@
 				INFOPLIST_KEY_UIBackgroundModes = (
 					audio,
 				);
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_ASSET_PATHS = "\"TimerWithDynamicIsland/Preview Content\"";

@@ -4,6 +4,7 @@ import ActivityKit
 import Foundation
 import AVFoundation
 import Dispatch
+import UIKit
 
 struct LyricLine {
     let time: TimeInterval
@@ -72,24 +73,32 @@ struct ContentView: View {
             
             Spacer()
 
-            Button(action: {
-                if musicManager.isMonitoring {
-                    musicManager.stopEverything()
-                } else {
-                    musicManager.startMonitoring()
+            VStack(spacing: 10) {
+                Button(action: {
+                    if musicManager.isMonitoring {
+                        musicManager.stopEverything()
+                    } else {
+                        musicManager.startMonitoring()
+                    }
+                }) {
+                    HStack {
+                        Image(systemName: musicManager.isMonitoring ? "stop.circle.fill" : "play.circle.fill")
+                        Text(musicManager.isMonitoring ? "停止监听并关闭灵动岛" : "开启 Apple Music 不死监听")
+                    }
+                    .font(.headline)
+                    .padding()
+                    .frame(maxWidth: .infinity)
+                    .background(musicManager.isMonitoring ? Color.red.opacity(0.8) : Color.black.opacity(0.05))
+                    .foregroundColor(musicManager.isMonitoring ? .white : .primary)
+                    .cornerRadius(15)
+                    .padding(.horizontal, 30)
                 }
-            }) {
-                HStack {
-                    Image(systemName: musicManager.isMonitoring ? "stop.circle.fill" : "play.circle.fill")
-                    Text(musicManager.isMonitoring ? "停止监听并关闭灵动岛" : "开启 Apple Music 不死监听")
-                }
-                .font(.headline)
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(musicManager.isMonitoring ? Color.red.opacity(0.8) : Color.black.opacity(0.05))
-                .foregroundColor(musicManager.isMonitoring ? .white : .primary)
-                .cornerRadius(15)
-                .padding(.horizontal, 30)
+                
+                // ⚠️ 极其重要的操作提示
+                Text("⚠️ iOS 16.2+ 必看：请在系统设置中找到本应用\\n进入【实时活动】并开启【允许频繁更新】")
+                    .font(.caption2)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
             }
             
             Text(musicManager.errorMessage)
@@ -104,7 +113,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (突破 30秒 XPC 冻结魔咒版)
+// 2. 核心大心脏 (纯内存计算级音频保活，彻底隔绝磁盘休眠)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -126,66 +135,90 @@ class MusicManager: ObservableObject {
     private var lastUpdatedLyric = ""
     private var isFetchingLyrics = false 
     
-    // 🚨 时间飞轮系统
+    private var isAppInBackground: Bool = false
     private var inertialTime: TimeInterval = 0
     private var lastTickDate = Date()
-    private var lastRawSystemTime: TimeInterval = -1 // 用于侦测苹果系统时间是否冻结
-    private var timeFrozenTicks: Int = 0 // 冻结计数器
+    private var engineTickCount = 0
     
-    // 纯内存音频引擎
+    // 🚨 终极核武器：全内存实时的数学音频生成器
     private var audioEngine: AVAudioEngine?
-    private var playerNode: AVAudioPlayerNode?
+    private var sourceNode: AVAudioSourceNode?
+
+    init() {
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(appWillEnterForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    @objc private func appDidEnterBackground() {
+        self.isAppInBackground = true
+    }
+
+    @objc private func appWillEnterForeground() {
+        self.isAppInBackground = false
+        let rawSystemTime = self.musicPlayer.currentPlaybackTime
+        if !rawSystemTime.isNaN {
+            self.inertialTime = rawSystemTime
+        }
+    }
 
     func startMonitoring() {
         self.isMonitoring = true
-        self.errorMessage = "正在挂载底层保活引擎..."
+        self.errorMessage = "正在挂载底层数学引擎..."
         
         purgeOrphanedActivities()
-        setupMemoryAudioEngine()
+        setupMathAudioEngine()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
                     self.startMasterLoop()
-                    self.errorMessage = "✅ 监听引擎启动成功"
+                    self.errorMessage = "✅ 数学保活引擎挂载成功"
                 } else {
-                    self.errorMessage = "❌ 请在系统设置中允许访问媒体与 Apple Music"
+                    self.errorMessage = "❌ 请允许访问 Apple Music"
                     self.isMonitoring = false
                 }
             }
         }
     }
     
-    // 🚨 终极保活：0 磁盘读写，纯内存生成极其微弱音频流
-    private func setupMemoryAudioEngine() {
+    // 🚨 史上最强防休眠技术：使用纯数学计算在内存里每秒实时生成 44100 个采样点。
+    // 没有文件读取！没有硬盘 I/O！完美避开所有系统清理机制！
+    private func setupMathAudioEngine() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
             
             audioEngine = AVAudioEngine()
-            playerNode = AVAudioPlayerNode()
+            guard let engine = audioEngine else { return }
             
-            guard let engine = audioEngine, let player = playerNode else { return }
-            
-            engine.attach(player)
             let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
-            engine.connect(player, to: engine.mainMixerNode, format: format)
+            var localTime: Double = 0
             
-            let frameCount = AVAudioFrameCount(44100 * 2) // 2秒缓冲区
-            guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return }
-            buffer.frameLength = frameCount
-            
-            if let channelData = buffer.floatChannelData {
-                for i in 0..<Int(frameCount) {
-                    // 生成 10Hz，振幅仅为 0.01 的人耳不可见波形
-                    channelData[0][i] = Float(sin(2.0 * .pi * 10.0 * Double(i) / 44100.0)) * 0.01
+            // 构建底层音频源节点，直接通过 CPU 生成 20kHz 隐形声波
+            sourceNode = AVAudioSourceNode { _, _, frameCount, audioBufferList -> OSStatus in
+                let ablPointer = UnsafeMutableAudioBufferListPointer(audioBufferList)
+                for frame in 0..<Int(frameCount) {
+                    // 20kHz，15% 振幅，欺骗系统却绝对安静
+                    let value = Float(sin(2.0 * .pi * 20000.0 * localTime / 44100.0)) * 0.15
+                    localTime += 1.0
+                    
+                    for buffer in ablPointer {
+                        if let mData = buffer.mData {
+                            let floatPtr = mData.assumingMemoryBound(to: Float.self)
+                            floatPtr[frame] = value
+                        }
+                    }
                 }
+                return noErr
             }
             
-            try engine.start()
-            player.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
-            player.play()
+            guard let source = sourceNode else { return }
+            engine.attach(source)
+            engine.connect(source, to: engine.mainMixerNode, format: format)
             
+            try engine.start()
+            
+            // 拦截一切外部打断
             NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
                 guard let self = self,
                       let userInfo = notification.userInfo,
@@ -195,11 +228,10 @@ class MusicManager: ObservableObject {
                 if type == .ended {
                     try? AVAudioSession.sharedInstance().setActive(true)
                     try? self.audioEngine?.start()
-                    self.playerNode?.play()
                 }
             }
         } catch {
-            self.errorMessage = "音频引擎挂载失败: \(error.localizedDescription)"
+            self.errorMessage = "引擎挂载失败: \(error.localizedDescription)"
         }
     }
 
@@ -223,110 +255,96 @@ class MusicManager: ObservableObject {
         masterTimer?.cancel()
         self.lastTickDate = Date()
         self.inertialTime = 0
-        self.lastRawSystemTime = -1
-        self.timeFrozenTicks = 0
+        self.engineTickCount = 0
         
         let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInteractive)
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(wallDeadline: .now(), repeating: 0.2) // 每 0.2 秒推进一次
+        timer.schedule(wallDeadline: .now(), repeating: 0.2)
         
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
+            self.engineTickCount += 1
             
             let now = Date()
             let delta = now.timeIntervalSince(self.lastTickDate)
             self.lastTickDate = now
             
-            let rawSystemTime = self.musicPlayer.currentPlaybackTime
-            let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
-            let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
-            
-            // 🚨 核心逻辑 1：侦测 30 秒冻结效应
-            let isSystemTimeFrozen = (rawSystemTime == self.lastRawSystemTime)
-            self.lastRawSystemTime = rawSystemTime
-            
-            if isSystemTimeFrozen {
-                self.timeFrozenTicks += 1
-            } else {
-                self.timeFrozenTicks = 0
-            }
-            
-            // 引擎防坠毁保护
-            if self.playerNode?.isPlaying == false {
+            // 保证纯内存引擎永不止步
+            if self.audioEngine?.isRunning == false {
                 try? AVAudioSession.sharedInstance().setActive(true)
                 try? self.audioEngine?.start()
-                self.playerNode?.play()
             }
             
             let isSystemPlaying = (self.musicPlayer.playbackState == .playing)
             let isOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
-            let currentlyPlaying = isSystemPlaying || isOtherPlaying
+            let currentlyPlaying = self.isAppInBackground ? isOtherPlaying : (isSystemPlaying || isOtherPlaying)
             
             DispatchQueue.main.async { self.isPlaying = currentlyPlaying }
             
-            // 🚨 核心逻辑 2：惯性时间推进
             if currentlyPlaying {
                 self.inertialTime += delta
             }
             
-            // 🚨 核心逻辑 3：防拉扯纠偏 (只要系统被冻结，绝对不与系统同步！)
-            if !rawSystemTime.isNaN && self.timeFrozenTicks < 3 && currentlyPlaying {
-                let diff = rawSystemTime - self.inertialTime
-                if abs(diff) > 1.5 {
-                    // 用户切歌或拖动进度条，必须立刻同步
-                    self.inertialTime = rawSystemTime
-                } else if abs(diff) > 0.1 {
-                    // 平滑修正微小误差
-                    self.inertialTime += diff * 0.2
-                }
-            }
-            
-            // 🚨 核心逻辑 4：切歌监测
-            if !rawTitle.isEmpty && rawTitle != self.currentSongName {
-                DispatchQueue.main.async {
-                    self.currentSongName = rawTitle
-                    self.currentArtistName = artist
+            if !self.isAppInBackground {
+                let rawSystemTime = self.musicPlayer.currentPlaybackTime
+                let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
+                let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
+                
+                if !rawSystemTime.isNaN {
+                    let diff = rawSystemTime - self.inertialTime
+                    if abs(diff) > 1.5 {
+                        self.inertialTime = rawSystemTime
+                    } else {
+                        self.inertialTime += diff * 0.2
+                    }
                 }
                 
-                self.currentLyricIndex = -1
-                self.parsedLyrics = []
-                self.lastUpdatedLyric = ""
-                self.inertialTime = rawSystemTime.isNaN ? 0 : rawSystemTime
-                
-                if let artwork = self.musicPlayer.nowPlayingItem?.artwork,
-                   let image = artwork.image(at: CGSize(width: 50, height: 50)) {
-                    DispatchQueue.main.async { self.currentThemeColor = image.averageColorHex() ?? "#34C759" }
-                }
-                
-                self.updateIsland(songName: rawTitle, lyric: "🎵 连网抓取歌词...")
-                
-                if !self.isFetchingLyrics {
-                    self.isFetchingLyrics = true
+                if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                     DispatchQueue.main.async {
-                        Task {
-                            let newLyrics = await self.downloadLyrics(title: rawTitle, artist: artist)
-                            DispatchQueue.main.async {
-                                self.isFetchingLyrics = false
-                                if self.currentSongName == rawTitle {
-                                    self.parsedLyrics = newLyrics
-                                    if newLyrics.isEmpty {
-                                        let msg = "❌ 无滚动歌词"
-                                        self.currentDisplayLyric = msg
-                                        self.updateIsland(songName: rawTitle, lyric: msg)
-                                    } else {
-                                        let msg = newLyrics.first?.text ?? ""
-                                        self.currentDisplayLyric = msg
-                                        self.updateIsland(songName: rawTitle, lyric: msg)
-                                        self.errorMessage = "✅ 歌词已就位 (\(newLyrics.count)行)"
+                        self.currentSongName = rawTitle
+                        self.currentArtistName = artist
+                    }
+                    
+                    self.currentLyricIndex = -1
+                    self.parsedLyrics = []
+                    self.lastUpdatedLyric = ""
+                    self.inertialTime = rawSystemTime.isNaN ? 0 : rawSystemTime
+                    
+                    if let artwork = self.musicPlayer.nowPlayingItem?.artwork,
+                       let image = artwork.image(at: CGSize(width: 50, height: 50)) {
+                        DispatchQueue.main.async { self.currentThemeColor = image.averageColorHex() ?? "#34C759" }
+                    }
+                    
+                    self.updateIsland(songName: rawTitle, lyric: "🎵 连网抓取歌词...")
+                    
+                    if !self.isFetchingLyrics {
+                        self.isFetchingLyrics = true
+                        DispatchQueue.main.async {
+                            Task {
+                                let newLyrics = await self.downloadLyrics(title: rawTitle, artist: artist)
+                                DispatchQueue.main.async {
+                                    self.isFetchingLyrics = false
+                                    if self.currentSongName == rawTitle {
+                                        self.parsedLyrics = newLyrics
+                                        if newLyrics.isEmpty {
+                                            let msg = "❌ 无滚动歌词"
+                                            self.currentDisplayLyric = msg
+                                            self.updateIsland(songName: rawTitle, lyric: msg)
+                                        } else {
+                                            let msg = newLyrics.first?.text ?? ""
+                                            self.currentDisplayLyric = msg
+                                            self.updateIsland(songName: rawTitle, lyric: msg)
+                                            self.errorMessage = "✅ 歌词已就位 (\(newLyrics.count)行)"
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
+            } 
             
-            // 歌词滚动推送
+            // === 核心歌词推送，附带系统限制保护 ===
             if currentlyPlaying {
                 if !self.parsedLyrics.isEmpty {
                     let calculatedTime = self.inertialTime + 0.3
@@ -344,19 +362,19 @@ class MusicManager: ObservableObject {
                         }
                     }
                 }
-            } else if !currentlyPlaying && !rawTitle.isEmpty {
-                // 每 5 秒才发一次暂停通知，防刷屏
-                if Int(now.timeIntervalSince1970) % 5 == 0 {
-                    self.updateIsland(songName: rawTitle, lyric: "⏸ 已暂停播放")
+            } else if !currentlyPlaying && !self.currentSongName.isEmpty {
+                if self.engineTickCount % 5 == 0 {
+                    self.updateIsland(songName: self.currentSongName, lyric: "⏸ 已暂停")
                 }
             }
             
-            // 诊断报告
-            DispatchQueue.main.async {
-                if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("❌") {
-                    let sec = Int(self.inertialTime)
-                    let freezeStatus = self.timeFrozenTicks > 3 ? "🔒冻结盲走" : "📡实时同步"
-                    self.errorMessage = "✅ \(freezeStatus) | 进度: \(sec)s | \(currentlyPlaying ? "▶️ 播放" : "⏸ 暂停")"
+            if self.engineTickCount % 10 == 0 {
+                DispatchQueue.main.async {
+                    if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("❌") {
+                        let sec = Int(self.inertialTime)
+                        let stateStr = self.isAppInBackground ? "🔒内存盲走" : "📡前台同步"
+                        self.errorMessage = "✅ \(stateStr) | 进度: \(sec)s | \(currentlyPlaying ? "▶️" : "⏸")"
+                    }
                 }
             }
         }
@@ -365,7 +383,6 @@ class MusicManager: ObservableObject {
         self.masterTimer = timer
     }
 
-    // ========== 以下为歌词抓取模块 (逻辑保持一致) ==========
     private func downloadLyrics(title: String, artist: String) async -> [LyricLine] {
         var cleanTitle = title
         if let idx = cleanTitle.firstIndex(of: "(") { cleanTitle = String(cleanTitle[..<idx]) }
@@ -523,9 +540,7 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         self.isMonitoring = false
         masterTimer?.cancel()
-        playerNode?.stop()
         audioEngine?.stop()
-        NotificationCenter.default.removeObserver(self)
         
         currentSongName = ""
         currentArtistName = ""
