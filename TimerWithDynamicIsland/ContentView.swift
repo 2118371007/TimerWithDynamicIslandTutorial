@@ -4,7 +4,6 @@ import ActivityKit
 import Foundation
 import AVFoundation
 import Dispatch
-import UIKit // 🚨 新增：用于申请底层后台任务权限
 
 struct LyricLine {
     let time: TimeInterval
@@ -27,7 +26,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "10Hz次声波引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "军用级保活引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -66,7 +65,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (RunLoop 降频保活版)
+// 2. 核心大心脏 (AVAudioEngine 硬件级保活)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -81,16 +80,17 @@ class MusicManager: ObservableObject {
     private var masterTimer: DispatchSourceTimer?
     private var currentLyricIndex = -1
     private var currentSongName = ""
-    private var lastPlaybackState: MPMusicPlaybackState = .stopped
     private var engineTickCount = 0
     
-    // 🚨 灵动岛预算保护锁
+    // 灵动岛预算保护锁
     private var lastUpdatedSongName = ""
     private var lastUpdatedLyric = ""
     
-    private var audioPlayer: AVAudioPlayer?
+    // 🚨 使用底层音频引擎，彻底避免被系统当成普通音频杀掉
+    private var audioEngine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
+    
     private var isFetchingLyrics = false 
-    private var bgTask: UIBackgroundTaskIdentifier = .invalid // 🚨 后台任务句柄
 
     func setupMonitoring() {
         self.errorMessage = "正在初始化底层驱动..."
@@ -98,14 +98,8 @@ class MusicManager: ObservableObject {
         self.lastUpdatedSongName = ""
         self.lastUpdatedLyric = ""
         
-        // 🚨 申请系统最高级别的后台过渡权限，保护前 30 秒不被杀
-        self.bgTask = UIApplication.shared.beginBackgroundTask(expirationHandler: {
-            UIApplication.shared.endBackgroundTask(self.bgTask)
-            self.bgTask = .invalid
-        })
-        
         purgeOrphanedActivities()
-        configureBulletproofAudio()
+        configureMilitaryGradeAudio()
         
         musicPlayer.beginGeneratingPlaybackNotifications()
         
@@ -130,51 +124,51 @@ class MusicManager: ObservableObject {
         }
     }
     
-    private func configureBulletproofAudio() {
+    private func configureMilitaryGradeAudio() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay, .allowBluetooth])
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowBluetooth, .allowAirPlay])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("subsonic_keepalive.wav")
-            let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatLinearPCM),
-                AVSampleRateKey: 44100.0,
-                AVNumberOfChannelsKey: 1,
-                AVLinearPCMBitDepthKey: 16,
-                AVLinearPCMIsNonInterleaved: false,
-                AVLinearPCMIsFloatKey: false,
-                AVLinearPCMIsBigEndianKey: false
-            ]
+            // 🚨 丢弃普通的 AVAudioPlayer，启用 AVAudioEngine
+            audioEngine = AVAudioEngine()
+            playerNode = AVAudioPlayerNode()
             
-            let format = AVAudioFormat(settings: settings)!
-            let frameCount = AVAudioFrameCount(44100 * 2) // 2秒音频，一直循环
-            if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
-                buffer.frameLength = frameCount
-                if let int16ChannelData = buffer.int16ChannelData {
-                    // 🚨 终极破解：生成 10Hz 次声波！
-                    // 人耳听不到，喇叭放不出，但系统看来是一段振幅高达 15000 的轰鸣巨响！
-                    // 完美绕过 iOS 17 的静音 App 猎杀机制。
-                    let sampleRate = 44100.0
-                    let frequency = 10.0
-                    let amplitude = 15000.0 
-                    for i in 0..<Int(frameCount) {
-                        let value = sin(2.0 * .pi * frequency * Double(i) / sampleRate) * amplitude
-                        int16ChannelData[0][i] = Int16(value)
-                    }
+            guard let engine = audioEngine, let player = playerNode else { return }
+            
+            engine.attach(player)
+            let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            try engine.start()
+            
+            // 制造一段完美的内存音频波形 (无文件残留)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100)!
+            buffer.frameLength = 44100
+            if let channelData = buffer.floatChannelData {
+                for i in 0..<Int(buffer.frameLength) {
+                    channelData[0][i] = Float(sin(2.0 * .pi * 10.0 * Double(i) / 44100.0) * 0.1)
                 }
-                let file = try AVAudioFile(forWriting: fileURL, settings: settings)
-                try file.write(from: buffer)
             }
             
-            audioPlayer = try AVAudioPlayer(contentsOf: fileURL)
-            audioPlayer?.numberOfLoops = -1
-            audioPlayer?.volume = 1.0 // 🚨 绝对不能调低音量！系统会检查 volume 属性！
-            audioPlayer?.prepareToPlay()
-            audioPlayer?.play()
+            player.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+            player.play()
             
-            DispatchQueue.main.async { self.errorMessage = "✅ 10Hz次声波引擎挂载成功" }
+            // 🚨 防御接听电话/闹钟打断导致引擎掉线
+            NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+                guard let self = self,
+                      let userInfo = notification.userInfo,
+                      let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+                      
+                if type == .ended {
+                    try? AVAudioSession.sharedInstance().setActive(true)
+                    try? self.audioEngine?.start()
+                    self.playerNode?.play()
+                }
+            }
+            
+            DispatchQueue.main.async { self.errorMessage = "✅ AVAudioEngine 硬件级保活启动" }
         } catch {
-            DispatchQueue.main.async { self.errorMessage = "❌ 音频引擎崩溃: \(error.localizedDescription)" }
+            DispatchQueue.main.async { self.errorMessage = "❌ 引擎崩溃: \(error.localizedDescription)" }
         }
     }
 
@@ -185,7 +179,7 @@ class MusicManager: ObservableObject {
         var inertialTime: TimeInterval = 0
         var lastTickDate = Date()
         
-        let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInitiated)
+        let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInteractive)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(wallDeadline: .now(), repeating: 0.2)
         
@@ -195,25 +189,38 @@ class MusicManager: ObservableObject {
             let now = Date()
             let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
             let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
-            let isPlaying = (self.musicPlayer.playbackState == .playing)
             let systemTime = self.musicPlayer.currentPlaybackTime
             
+            let timeSinceLastTick = now.timeIntervalSince(lastTickDate)
+            lastTickDate = now
+            
+            // 🚨 终极探测器：就算系统切断了 MusicPlayer 状态，只要有人在发声，就是正在播放
+            let systemPlaying = (self.musicPlayer.playbackState == .playing)
+            let otherAudioPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
+            let isPlaying = systemPlaying || otherAudioPlaying
+            
             // 引擎防坠毁：如果音频意外停止，强行救活
-            if self.audioPlayer?.isPlaying == false {
+            if self.playerNode?.isPlaying == false {
                 try? AVAudioSession.sharedInstance().setActive(true)
-                self.audioPlayer?.play()
+                try? self.audioEngine?.start()
+                self.playerNode?.play()
             }
             
-            // 惯性时钟
-            if !systemTime.isNaN {
+            // 🚨 强化的抗冻结惯性时钟
+            if !systemTime.isNaN && systemTime > 0 {
                 if abs(systemTime - lastKnownSystemTime) > 0.001 {
-                    inertialTime = systemTime
-                    lastKnownSystemTime = systemTime
+                    // 如果时间突变（且不是切后台导致的归零异常），同步真实时间
+                    if !(systemTime < 1.0 && lastKnownSystemTime > 5.0 && !systemPlaying) {
+                        inertialTime = systemTime
+                        lastKnownSystemTime = systemTime
+                    }
                 } else if isPlaying {
-                    inertialTime += now.timeIntervalSince(lastTickDate)
+                    // 后台卡死时，依靠内部时钟自己走
+                    inertialTime += timeSinceLastTick
                 }
+            } else if isPlaying {
+                inertialTime += timeSinceLastTick
             }
-            lastTickDate = now
             
             // 切歌监测
             if !rawTitle.isEmpty && rawTitle != self.currentSongName {
@@ -228,7 +235,6 @@ class MusicManager: ObservableObject {
                 
                 self.updateIsland(songName: rawTitle, lyric: "🎵 正在连网抓取歌词...")
                 
-                // 启动网络请求
                 if !self.isFetchingLyrics {
                     self.isFetchingLyrics = true
                     DispatchQueue.main.async {
@@ -267,12 +273,6 @@ class MusicManager: ObservableObject {
                             self.updateIsland(songName: self.currentSongName, lyric: currentText)
                         }
                     }
-                } else {
-                    if self.engineTickCount % 10 == 0 {
-                        DispatchQueue.main.async {
-                            self.errorMessage = "⚠️ 歌词列表为空 | 时间: \(Int(inertialTime))s | 等待歌词..."
-                        }
-                    }
                 }
             } else {
                 if !rawTitle.isEmpty {
@@ -280,21 +280,9 @@ class MusicManager: ObservableObject {
                 }
             }
             
-            self.lastPlaybackState = self.musicPlayer.playbackState
-            
             // 心跳报告
             if self.engineTickCount % 10 == 0 {
                 let secondsAlive = self.engineTickCount / 5
-                
-                if !self.currentSongName.isEmpty {
-                    if self.currentLyricIndex >= 0 && self.currentLyricIndex < self.parsedLyrics.count {
-                        let currentText = self.parsedLyrics[self.currentLyricIndex].text
-                        self.updateIsland(songName: self.currentSongName, lyric: currentText)
-                    } else if !self.parsedLyrics.isEmpty {
-                        self.updateIsland(songName: self.currentSongName, lyric: self.parsedLyrics.first?.text ?? "")
-                    }
-                }
-                
                 DispatchQueue.main.async {
                     if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("⚠️") && !self.errorMessage.contains("新") {
                         self.errorMessage = "✅ 后台存活: \(secondsAlive) 秒 | 歌词: \(self.parsedLyrics.count) 行 | \(isPlaying ? "▶️" : "⏸")"
@@ -315,9 +303,7 @@ class MusicManager: ObservableObject {
         
         DispatchQueue.main.async { self.errorMessage = "🔍 搜索歌词中..." }
         
-        // 优先使用网易云音乐接口
         var lrcString = await fetchLyricFromNetEase(keyword: "\(cleanTitle) \(artist)")
-        
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)") }
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
         if lrcString.isEmpty { lrcString = await fetchLyricFromKugou(keyword: cleanTitle) }
@@ -450,10 +436,7 @@ class MusicManager: ObservableObject {
     }
 
     func updateIsland(songName: String, lyric: String) {
-        if songName == lastUpdatedSongName && lyric == lastUpdatedLyric {
-            return
-        }
-        
+        if songName == lastUpdatedSongName && lyric == lastUpdatedLyric { return }
         lastUpdatedSongName = songName
         lastUpdatedLyric = lyric
 
@@ -493,11 +476,10 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         masterTimer?.cancel()
-        audioPlayer?.stop()
-        if bgTask != .invalid {
-            UIApplication.shared.endBackgroundTask(bgTask)
-            bgTask = .invalid
-        }
+        playerNode?.stop()
+        audioEngine?.stop()
+        NotificationCenter.default.removeObserver(self)
+        
         currentSongName = ""
         lastUpdatedSongName = ""
         lastUpdatedLyric = ""
