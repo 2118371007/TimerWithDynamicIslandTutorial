@@ -25,7 +25,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "终极主动轮询引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "纯净不死引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -59,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (主动轮询 Master Loop 版)
+// 2. 核心大心脏 (去除看门狗自杀逻辑 + 引擎自愈)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -71,8 +71,6 @@ class MusicManager: ObservableObject {
     @Published var currentThemeColor: String = "#34C759"
     
     private var parsedLyrics: [LyricLine] = []
-    
-    // 🚨 终极 Master Loop 任务
     private var masterLoopTask: Task<Void, Never>? 
     private var currentLyricIndex = -1
     private var currentSongName = ""
@@ -82,14 +80,14 @@ class MusicManager: ObservableObject {
     private let silencePlayer = AVAudioPlayerNode()
 
     func setupMonitoring() {
-        self.errorMessage = "正在启动终极引擎..."
+        self.errorMessage = "正在启动纯净引擎..."
         purgeOrphanedActivities()
         configureAudioSession()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 引擎启动，无视系统拦截！"
+                    self.errorMessage = "✅ 引擎启动，脱离系统看门狗！"
                     self.startMasterLoop()
                 } else {
                     self.errorMessage = "❌ 被拒绝访问 Apple Music"
@@ -107,6 +105,7 @@ class MusicManager: ObservableObject {
         }
     }
     
+    // 🚨 纯净白噪音引擎 + 自愈机制
     private func configureAudioSession() {
         do {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay])
@@ -122,19 +121,33 @@ class MusicManager: ObservableObject {
                 if let floatChannelData = buffer.floatChannelData {
                     for channel in 0..<Int(format.channelCount) {
                         for frame in 0..<Int(buffer.frameLength) {
-                            floatChannelData[channel][frame] = 1e-6 // 纳米白噪音保活
+                            floatChannelData[channel][frame] = 1e-6 
                         }
                     }
                 }
                 silencePlayer.scheduleBuffer(buffer, at: nil, options: .loops)
                 silencePlayer.play()
             }
+            
+            // 🚨 音频自愈：如果接电话导致引擎被挂起，电话打完自动重启
+            NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+                guard let self = self,
+                      let userInfo = notification.userInfo,
+                      let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+
+                if type == .ended {
+                    do {
+                        try AVAudioSession.sharedInstance().setActive(true)
+                        try self.silenceEngine.start()
+                        self.silencePlayer.play()
+                    } catch { print("自愈重启失败") }
+                }
+            }
+            
         } catch { print("音频引擎故障") }
     }
 
-    // ------------------------------------------
-    // 🚨 核心破解：抛弃所有被动监听，启动主动轮询
-    // ------------------------------------------
     private func startMasterLoop() {
         masterLoopTask?.cancel()
         
@@ -144,26 +157,20 @@ class MusicManager: ObservableObject {
                 let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
                 let isPlaying = (self.musicPlayer.playbackState == .playing)
                 
-                // 1. 主动发现切歌
                 if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                     self.currentSongName = rawTitle
                     self.currentLyricIndex = -1
                     
-                    // 提取封面颜色
                     if let artwork = self.musicPlayer.nowPlayingItem?.artwork,
                        let image = artwork.image(at: CGSize(width: 50, height: 50)) {
                         DispatchQueue.main.async { self.currentThemeColor = image.averageColorHex() ?? "#34C759" }
                     }
                     
                     self.updateIsland(songName: rawTitle, lyric: "🎵 匹配歌词中...")
-                    
-                    // 挂起当前线程去搜歌词，搜完再继续循环
                     await self.fetchAndParseLyrics(title: rawTitle, artist: artist)
                 }
                 
-                // 2. 主动发现暂停/恢复，并推送灵动岛
                 if isPlaying {
-                    // 如果正在播放，同步滚动歌词
                     if !self.parsedLyrics.isEmpty {
                         let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
                         if !currentTime.isNaN {
@@ -172,7 +179,6 @@ class MusicManager: ObservableObject {
                                 if currentTime >= line.time { newIndex = index } else { break }
                             }
                             
-                            // 只有歌词真正变化时才刷新灵动岛
                             if newIndex != self.currentLyricIndex && newIndex >= 0 {
                                 self.currentLyricIndex = newIndex
                                 let currentText = self.parsedLyrics[newIndex].text
@@ -183,16 +189,12 @@ class MusicManager: ObservableObject {
                         }
                     }
                 } else {
-                    // 如果暂停了，且之前没显示过暂停，就更新一次灵动岛
                     if self.lastPlaybackState == .playing {
                         self.updateIsland(songName: rawTitle.isEmpty ? "等待音乐" : rawTitle, lyric: "⏸ 已暂停播放")
                     }
                 }
                 
-                // 记录状态
                 self.lastPlaybackState = self.musicPlayer.playbackState
-                
-                // 🚨 每 0.1 秒循环一次！这是 App 在后台唯一的心跳！
                 try? await Task.sleep(nanoseconds: 100_000_000) 
             }
         }
@@ -309,9 +311,6 @@ class MusicManager: ObservableObject {
     }
 }
 
-// ==========================================
-// 辅助颜色解码与萃取
-// ==========================================
 extension UIImage {
     func averageColorHex() -> String? {
         guard let inputImage = CIImage(image: self) else { return nil }
