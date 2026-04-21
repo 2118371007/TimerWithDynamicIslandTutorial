@@ -209,16 +209,22 @@ class MusicManager: ObservableObject {
                 // 启动安全网络请求
                 if !self.isFetchingLyrics {
                     self.isFetchingLyrics = true
-                    Task {
-                        let newLyrics = await self.downloadLyrics(title: rawTitle, artist: artist)
-                        self.isFetchingLyrics = false
-                        if self.currentSongName == rawTitle {
-                            self.parsedLyrics = newLyrics
-                            if newLyrics.isEmpty {
-                                self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
-                                DispatchQueue.main.async { self.errorMessage = "❌ 搜词失败: \(rawTitle)" }
-                            } else {
-                                DispatchQueue.main.async { self.errorMessage = "✅ 歌词抓取成功！" }
+                    // 🚨 必须在主线程上启动网络任务，防止后台队列干扰
+                    DispatchQueue.main.async {
+                        Task {
+                            let newLyrics = await self.downloadLyrics(title: rawTitle, artist: artist)
+                            DispatchQueue.main.async {
+                                self.isFetchingLyrics = false
+                                if self.currentSongName == rawTitle {
+                                    self.parsedLyrics = newLyrics
+                                    if newLyrics.isEmpty {
+                                        self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
+                                        self.errorMessage = "❌ 搜词失败: \(rawTitle)"
+                                    } else {
+                                        self.updateIsland(songName: rawTitle, lyric: newLyrics.first?.text ?? "")
+                                        self.errorMessage = "✅ 歌词已就位 (\(newLyrics.count)行)"
+                                    }
+                                }
                             }
                         }
                     }
@@ -272,11 +278,24 @@ class MusicManager: ObservableObject {
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
+        DispatchQueue.main.async { self.errorMessage = "🔍 正在QQ音乐搜索: \(cleanTitle)..." }
         var lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)")
-        if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
-        if lrcString.isEmpty { lrcString = await fetchLyricFromKugou(keyword: cleanTitle) }
         
-        return self.parseLRC(lrcString: lrcString)
+        if lrcString.isEmpty {
+            DispatchQueue.main.async { self.errorMessage = "🔍 QQ失败，尝试搜: \(cleanTitle)" }
+            lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle)
+        }
+        
+        if lrcString.isEmpty {
+            DispatchQueue.main.async { self.errorMessage = "🔍 QQ都失败了，改用酷狗..." }
+            lrcString = await fetchLyricFromKugou(keyword: cleanTitle)
+        }
+        
+        let result = self.parseLRC(lrcString: lrcString)
+        if result.isEmpty {
+            DispatchQueue.main.async { self.errorMessage = "❌ 无法获取歌词: \(cleanTitle)" }
+        }
+        return result
     }
 
     func fetchLyricFromQQMusic(keyword: String) async -> String {
@@ -284,25 +303,38 @@ class MusicManager: ObservableObject {
         let searchUrl = URL(string: "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?p=1&n=1&w=\(encoded)&format=json")!
         do {
             var request = URLRequest(url: searchUrl)
-            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 10
             let (searchData, _) = try await URLSession.shared.data(for: request)
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
                   let dataMap = searchJson["data"] as? [String: Any],
                   let songMap = dataMap["song"] as? [String: Any],
                   let list = songMap["list"] as? [[String: Any]],
                   let first = list.first,
-                  let songmid = first["songmid"] as? String else { return "" }
+                  let songmid = first["songmid"] as? String else {
+                DispatchQueue.main.async { self.errorMessage = "❌ QQ音乐解析失败" }
+                return ""
+            }
             
             let lyricUrl = URL(string: "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid=\(songmid)&format=json")!
             var lyricReq = URLRequest(url: lyricUrl)
-            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer") 
+            lyricReq.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            lyricReq.setValue("https://y.qq.com", forHTTPHeaderField: "Referer")
+            lyricReq.timeoutInterval = 10
             let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
             guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
                   let lyricB64 = lyricJson["lyric"] as? String,
                   let decodedData = Data(base64Encoded: lyricB64),
-                  let lyricText = String(data: decodedData, encoding: .utf8) else { return "" }
+                  let lyricText = String(data: decodedData, encoding: .utf8) else {
+                DispatchQueue.main.async { self.errorMessage = "❌ QQ歌词解码失败" }
+                return ""
+            }
+            DispatchQueue.main.async { self.errorMessage = "✅ QQ音乐抓取成功!" }
             return lyricText
-        } catch { return "" }
+        } catch {
+            DispatchQueue.main.async { self.errorMessage = "❌ QQ请求错误: \(error.localizedDescription)" }
+            return ""
+        }
     }
 
     func fetchLyricFromKugou(keyword: String) async -> String {
@@ -310,17 +342,31 @@ class MusicManager: ObservableObject {
         let searchUrl = URL(string: "https://mobilecdn.kugou.com/api/v3/search/song?format=json&keyword=\(encoded)&page=1&pagesize=1")!
         do {
             var request = URLRequest(url: searchUrl)
-            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            request.timeoutInterval = 10
             let (searchData, _) = try await URLSession.shared.data(for: request)
             guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
                   let dataMap = searchJson["data"] as? [String: Any],
                   let infoArray = dataMap["info"] as? [[String: Any]],
-                  let hash = infoArray.first?["hash"] as? String else { return "" }
+                  let hash = infoArray.first?["hash"] as? String else {
+                DispatchQueue.main.async { self.errorMessage = "❌ 酷狗搜索失败" }
+                return ""
+            }
             
             let lyricUrl = URL(string: "https://m.kugou.com/app/i/krc.php?cmd=100&hash=\(hash)&timelength=999999")!
-            let (lyricData, _) = try await URLSession.shared.data(from: lyricUrl)
-            return String(data: lyricData, encoding: .utf8) ?? ""
-        } catch { return "" }
+            var lyricReq = URLRequest(url: lyricUrl)
+            lyricReq.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", forHTTPHeaderField: "User-Agent")
+            lyricReq.timeoutInterval = 10
+            let (lyricData, _) = try await URLSession.shared.data(for: lyricReq)
+            let lyricText = String(data: lyricData, encoding: .utf8) ?? ""
+            if !lyricText.isEmpty {
+                DispatchQueue.main.async { self.errorMessage = "✅ 酷狗歌词抓取成功!" }
+            }
+            return lyricText
+        } catch {
+            DispatchQueue.main.async { self.errorMessage = "❌ 酷狗请求错误: \(error.localizedDescription)" }
+            return ""
+        }
     }
 
     func parseLRC(lrcString: String) -> [LyricLine] {
