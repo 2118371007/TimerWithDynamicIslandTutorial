@@ -4,6 +4,7 @@ import ActivityKit
 import Foundation
 import AVFoundation
 import Dispatch
+import UIKit // 🚨 新增：用于申请底层后台任务权限
 
 struct LyricLine {
     let time: TimeInterval
@@ -26,7 +27,7 @@ struct ContentView: View {
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "低功耗不死引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "10Hz次声波引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -83,18 +84,26 @@ class MusicManager: ObservableObject {
     private var lastPlaybackState: MPMusicPlaybackState = .stopped
     private var engineTickCount = 0
     
-    // 🚨 灵动岛预算保护锁：记录最后一次更新的内容
+    // 🚨 灵动岛预算保护锁
     private var lastUpdatedSongName = ""
     private var lastUpdatedLyric = ""
     
     private var audioPlayer: AVAudioPlayer?
-    private var isFetchingLyrics = false // 防重入锁，保护后台网络
+    private var isFetchingLyrics = false 
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid // 🚨 后台任务句柄
 
     func setupMonitoring() {
         self.errorMessage = "正在初始化底层驱动..."
         self.engineTickCount = 0
         self.lastUpdatedSongName = ""
         self.lastUpdatedLyric = ""
+        
+        // 🚨 申请系统最高级别的后台过渡权限，保护前 30 秒不被杀
+        self.bgTask = UIApplication.shared.beginBackgroundTask(expirationHandler: {
+            UIApplication.shared.endBackgroundTask(self.bgTask)
+            self.bgTask = .invalid
+        })
+        
         purgeOrphanedActivities()
         configureBulletproofAudio()
         
@@ -126,8 +135,7 @@ class MusicManager: ObservableObject {
             try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers, .allowAirPlay, .allowBluetooth])
             try AVAudioSession.sharedInstance().setActive(true)
             
-            // 写入更安全的 Caches 文件夹，防止临时文件被系统意外清理
-            let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("silence_keepalive.wav")
+            let fileURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("subsonic_keepalive.wav")
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatLinearPCM),
                 AVSampleRateKey: 44100.0,
@@ -139,13 +147,19 @@ class MusicManager: ObservableObject {
             ]
             
             let format = AVAudioFormat(settings: settings)!
-            let frameCount = AVAudioFrameCount(44100 * 5) // 5秒
+            let frameCount = AVAudioFrameCount(44100 * 2) // 2秒音频，一直循环
             if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) {
                 buffer.frameLength = frameCount
                 if let int16ChannelData = buffer.int16ChannelData {
+                    // 🚨 终极破解：生成 10Hz 次声波！
+                    // 人耳听不到，喇叭放不出，但系统看来是一段振幅高达 15000 的轰鸣巨响！
+                    // 完美绕过 iOS 17 的静音 App 猎杀机制。
+                    let sampleRate = 44100.0
+                    let frequency = 10.0
+                    let amplitude = 15000.0 
                     for i in 0..<Int(frameCount) {
-                        // 🚨 魔法改动：注入极微弱的白噪音 (人耳听不见)，彻底骗过 iOS 17 的静音检测进程杀手
-                        int16ChannelData[0][i] = Int16.random(in: -2...2)
+                        let value = sin(2.0 * .pi * frequency * Double(i) / sampleRate) * amplitude
+                        int16ChannelData[0][i] = Int16(value)
                     }
                 }
                 let file = try AVAudioFile(forWriting: fileURL, settings: settings)
@@ -154,11 +168,11 @@ class MusicManager: ObservableObject {
             
             audioPlayer = try AVAudioPlayer(contentsOf: fileURL)
             audioPlayer?.numberOfLoops = -1
-            audioPlayer?.volume = 0.01 // 极低音量
+            audioPlayer?.volume = 1.0 // 🚨 绝对不能调低音量！系统会检查 volume 属性！
             audioPlayer?.prepareToPlay()
             audioPlayer?.play()
             
-            DispatchQueue.main.async { self.errorMessage = "✅ 物理音频引擎挂载成功" }
+            DispatchQueue.main.async { self.errorMessage = "✅ 10Hz次声波引擎挂载成功" }
         } catch {
             DispatchQueue.main.async { self.errorMessage = "❌ 音频引擎崩溃: \(error.localizedDescription)" }
         }
@@ -171,7 +185,6 @@ class MusicManager: ObservableObject {
         var inertialTime: TimeInterval = 0
         var lastTickDate = Date()
         
-        // 0.2秒一次 (5 FPS)，后台可靠性强
         let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInitiated)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(wallDeadline: .now(), repeating: 0.2)
@@ -185,7 +198,7 @@ class MusicManager: ObservableObject {
             let isPlaying = (self.musicPlayer.playbackState == .playing)
             let systemTime = self.musicPlayer.currentPlaybackTime
             
-            // 引擎防坠毁
+            // 引擎防坠毁：如果音频意外停止，强行救活
             if self.audioPlayer?.isPlaying == false {
                 try? AVAudioSession.sharedInstance().setActive(true)
                 self.audioPlayer?.play()
@@ -215,7 +228,7 @@ class MusicManager: ObservableObject {
                 
                 self.updateIsland(songName: rawTitle, lyric: "🎵 正在连网抓取歌词...")
                 
-                // 启动安全网络请求
+                // 启动网络请求
                 if !self.isFetchingLyrics {
                     self.isFetchingLyrics = true
                     DispatchQueue.main.async {
@@ -273,7 +286,6 @@ class MusicManager: ObservableObject {
             if self.engineTickCount % 10 == 0 {
                 let secondsAlive = self.engineTickCount / 5
                 
-                // 此时 updateIsland 内部已做防重复拦截，可以安全调用以刷新 StaleDate
                 if !self.currentSongName.isEmpty {
                     if self.currentLyricIndex >= 0 && self.currentLyricIndex < self.parsedLyrics.count {
                         let currentText = self.parsedLyrics[self.currentLyricIndex].text
@@ -303,10 +315,9 @@ class MusicManager: ObservableObject {
         
         DispatchQueue.main.async { self.errorMessage = "🔍 搜索歌词中..." }
         
-        // 🚨 优先使用网易云音乐接口 (目前最稳定)
+        // 优先使用网易云音乐接口
         var lrcString = await fetchLyricFromNetEase(keyword: "\(cleanTitle) \(artist)")
         
-        // 网易云没找到再找 QQ 和 酷狗
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: "\(cleanTitle) \(artist)") }
         if lrcString.isEmpty { lrcString = await fetchLyricFromQQMusic(keyword: cleanTitle) }
         if lrcString.isEmpty { lrcString = await fetchLyricFromKugou(keyword: cleanTitle) }
@@ -318,7 +329,6 @@ class MusicManager: ObservableObject {
         return result
     }
 
-    // 🚨 新增：网易云音乐 API (抓取成功率高)
     func fetchLyricFromNetEase(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
         let searchUrl = URL(string: "https://music.163.com/api/search/get/web?s=\(encoded)&type=1&limit=1")!
@@ -440,8 +450,6 @@ class MusicManager: ObservableObject {
     }
 
     func updateIsland(songName: String, lyric: String) {
-        // 🚨 核心阻断：如果歌词和歌名都没变，千万不要调用更新！
-        // 苹果严格限制灵动岛高频更新，频繁提交一样的内容会在 30 秒内耗尽预算导致假死。
         if songName == lastUpdatedSongName && lyric == lastUpdatedLyric {
             return
         }
@@ -486,6 +494,10 @@ class MusicManager: ObservableObject {
         musicPlayer.endGeneratingPlaybackNotifications()
         masterTimer?.cancel()
         audioPlayer?.stop()
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
+        }
         currentSongName = ""
         lastUpdatedSongName = ""
         lastUpdatedLyric = ""
