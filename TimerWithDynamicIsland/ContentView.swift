@@ -3,6 +3,7 @@ import MediaPlayer
 import ActivityKit
 import Foundation
 import AVFoundation
+import Dispatch
 
 struct LyricLine {
     let time: TimeInterval
@@ -76,7 +77,7 @@ class MusicManager: ObservableObject {
     @Published var currentThemeColor: String = "#34C759"
     
     private var parsedLyrics: [LyricLine] = []
-    private var masterTimer: Timer?
+    private var masterTimer: DispatchSourceTimer?
     private var currentLyricIndex = -1
     private var currentSongName = ""
     private var lastPlaybackState: MPMusicPlaybackState = .stopped
@@ -155,14 +156,18 @@ class MusicManager: ObservableObject {
     }
 
     private func startMasterLoop() {
-        masterTimer?.invalidate()
+        masterTimer?.cancel()
         
         var lastKnownSystemTime: TimeInterval = -1
         var inertialTime: TimeInterval = 0
         var lastTickDate = Date()
         
-        // 🚨 换用 Timer，0.2秒一次 (5 FPS)，大幅降低后台 CPU 功耗躲避击杀
-        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+        // 🚨 改用 DispatchSourceTimer，0.2秒一次 (5 FPS)，后台可靠性强
+        let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInitiated)
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(wallDeadline: .now(), repeating: 0.2)
+        
+        timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             self.engineTickCount += 1
             let now = Date()
@@ -256,8 +261,8 @@ class MusicManager: ObservableObject {
             }
         }
         
-        // 🚨 必须挂载到 common 模式，否则退后台定时器直接罢工
-        RunLoop.main.add(timer, forMode: .common)
+        // 🚨 启动 GCD 定时器，后台比 Timer 更可靠
+        timer.resume()
         self.masterTimer = timer
     }
 
@@ -356,8 +361,8 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        // 🚨 关键：设置 staleDate 为30秒后，防止Live Activity过期
-                        let staleDate = Date().addingTimeInterval(30)
+                        // 🚨 初始化时设置 staleDate 为 120秒后（大幅延长）
+                        let staleDate = Date().addingTimeInterval(120)
                         let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
                     } else {
@@ -366,8 +371,9 @@ class MusicManager: ObservableObject {
                 } catch {}
             } else {
                 if #available(iOS 16.2, *) {
-                    // 🚨 每次更新都延长 staleDate，这样灵动岛就不会卡住了
-                    let staleDate = Date().addingTimeInterval(30)
+                    // 🚨 每次更新都极大地延长 staleDate 到 120秒后
+                    // 这样即使有任何延迟，灵动岛也不会过期
+                    let staleDate = Date().addingTimeInterval(120)
                     let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                     await currentActivity?.update(content)
                 } else {
@@ -379,7 +385,7 @@ class MusicManager: ObservableObject {
     
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
-        masterTimer?.invalidate()
+        masterTimer?.cancel()
         audioPlayer?.stop()
         currentSongName = ""
         purgeOrphanedActivities() 
