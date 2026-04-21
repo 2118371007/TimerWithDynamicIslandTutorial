@@ -247,6 +247,13 @@ class MusicManager: ObservableObject {
                             self.updateIsland(songName: self.currentSongName, lyric: currentText)
                         }
                     }
+                } else {
+                    // 🔍 诊断：为什么没有歌词
+                    if self.engineTickCount % 10 == 0 {
+                        DispatchQueue.main.async {
+                            self.errorMessage = "⚠️ 歌词列表为空 | 时间: \(Int(inertialTime))s | 等待歌词..."
+                        }
+                    }
                 }
             } else {
                 if !rawTitle.isEmpty {
@@ -256,12 +263,28 @@ class MusicManager: ObservableObject {
             
             self.lastPlaybackState = self.musicPlayer.playbackState
             
-            // 心跳报告 (每 5 次循环 = 1秒)
-            if self.engineTickCount % 5 == 0 {
+            // 心跳报告 + 保活更新 (每 10 次循环 = 2秒，避免系统限流)
+            if self.engineTickCount % 10 == 0 {
                 let secondsAlive = self.engineTickCount / 5
+                
+                // 🚨 关键：每 2秒都主动刷新灵动岛的 staleDate
+                // 即使歌词没有更新，也要保活
+                if !self.currentSongName.isEmpty {
+                    if self.currentLyricIndex >= 0 && self.currentLyricIndex < self.parsedLyrics.count {
+                        let currentText = self.parsedLyrics[self.currentLyricIndex].text
+                        self.updateIsland(songName: self.currentSongName, lyric: currentText)
+                    } else if !self.parsedLyrics.isEmpty {
+                        // 如果有歌词但索引不对，显示第一行
+                        self.updateIsland(songName: self.currentSongName, lyric: self.parsedLyrics.first?.text ?? "")
+                    } else {
+                        // 没有歌词时也要保活
+                        self.updateIsland(songName: self.currentSongName, lyric: "⏳ 等待歌词...")
+                    }
+                }
+                
                 DispatchQueue.main.async {
-                    if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") {
-                        self.errorMessage = "✅ 后台存活: \(secondsAlive) 秒 | 播放状态: \(isPlaying ? "播放" : "暂停")"
+                    if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("⚠️") && !self.errorMessage.contains("新") {
+                        self.errorMessage = "✅ 后台存活: \(secondsAlive) 秒 | 歌词: \(self.parsedLyrics.count) 行 | \(isPlaying ? "▶️" : "⏸")"
                     }
                 }
             }
@@ -399,19 +422,26 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        // 🚨 初始化时设置 staleDate 为 120秒后（大幅延长）
-                        let staleDate = Date().addingTimeInterval(120)
+                        // 🚨 初始化时设置 staleDate 为 300秒后（5分钟）
+                        let staleDate = Date().addingTimeInterval(300)
                         let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
+                        DispatchQueue.main.async {
+                            self.errorMessage = "🆕 灵动岛已创建"
+                        }
                     } else {
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), contentState: state)
                     }
-                } catch {}
+                } catch {
+                    DispatchQueue.main.async {
+                        self.errorMessage = "❌ 灵动岛创建失败: \(error.localizedDescription)"
+                    }
+                }
             } else {
                 if #available(iOS 16.2, *) {
-                    // 🚨 每次更新都极大地延长 staleDate 到 120秒后
-                    // 这样即使有任何延迟，灵动岛也不会过期
-                    let staleDate = Date().addingTimeInterval(120)
+                    // 🚨 每次更新都极大地延长 staleDate 到 300秒后
+                    // 这样后台每秒刷新一次，灵动岛永远活着
+                    let staleDate = Date().addingTimeInterval(300)
                     let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                     await currentActivity?.update(content)
                 } else {
