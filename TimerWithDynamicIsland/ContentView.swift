@@ -11,29 +11,28 @@ struct LyricLine {
 }
 
 // ==========================================
-// 1. UI 界面：华丽变身内置播放器
+// 1. UI 界面：Apple Music 专属监听器
 // ==========================================
 struct ContentView: View {
-    @State private var showMediaPicker = false
     @ObservedObject var musicManager = MusicManager.shared
     
     var body: some View {
         VStack(spacing: 30) {
-            // 顶部封面与歌曲信息
+            // 顶部状态提示
             VStack(spacing: 15) {
-                Image(systemName: "music.note.house.fill")
+                Image(systemName: musicManager.isMonitoring ? "waveform.circle.fill" : "waveform.circle")
                     .resizable()
                     .scaledToFit()
                     .frame(width: 100, height: 100)
                     .foregroundColor(Color(hex: musicManager.currentThemeColor))
                     .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 20)
                 
-                Text(musicManager.currentSongName.isEmpty ? "动歌岛 - 内置播放器" : musicManager.currentSongName)
+                Text(musicManager.currentSongName.isEmpty ? "等待 Apple Music 播放" : musicManager.currentSongName)
                     .font(.title2.bold())
                     .lineLimit(1)
                     .padding(.horizontal)
                 
-                Text(musicManager.currentArtistName.isEmpty ? "请选择歌曲开始播放" : musicManager.currentArtistName)
+                Text(musicManager.currentArtistName.isEmpty ? "未检测到歌曲" : musicManager.currentArtistName)
                     .font(.subheadline)
                     .foregroundColor(.gray)
             }
@@ -52,7 +51,7 @@ struct ContentView: View {
             }
             .padding(.horizontal, 20)
 
-            // 🎵 播放控制区 (真正的内置控制)
+            // 🎵 外部播放控制区 (直接遥控 Apple Music)
             HStack(spacing: 40) {
                 Button(action: { musicManager.playPrevious() }) {
                     Image(systemName: "backward.fill")
@@ -76,27 +75,23 @@ struct ContentView: View {
             
             Spacer()
 
-            // 🚀 选歌按钮 (触发我们纯手工打造的选歌器)
+            // 🚀 启动监听按钮
             Button(action: {
-                MPMediaLibrary.requestAuthorization { status in
-                    DispatchQueue.main.async {
-                        if status == .authorized {
-                            self.showMediaPicker = true
-                        } else {
-                            musicManager.errorMessage = "❌ 请在系统设置中允许访问媒体与 Apple Music"
-                        }
-                    }
+                if musicManager.isMonitoring {
+                    musicManager.stopEverything()
+                } else {
+                    musicManager.startMonitoring()
                 }
             }) {
                 HStack {
-                    Image(systemName: "music.quarternote.3")
-                    Text("从 Apple Music 选择歌曲")
+                    Image(systemName: musicManager.isMonitoring ? "stop.circle.fill" : "play.circle.fill")
+                    Text(musicManager.isMonitoring ? "停止监听并关闭灵动岛" : "开启 Apple Music 不死监听")
                 }
                 .font(.headline)
                 .padding()
                 .frame(maxWidth: .infinity)
-                .background(Color.black.opacity(0.05))
-                .foregroundColor(.primary)
+                .background(musicManager.isMonitoring ? Color.red.opacity(0.8) : Color.black.opacity(0.05))
+                .foregroundColor(musicManager.isMonitoring ? .white : .primary)
                 .cornerRadius(15)
                 .padding(.horizontal, 30)
             }
@@ -107,118 +102,30 @@ struct ContentView: View {
                 .foregroundColor(.gray)
                 .padding(.bottom, 20)
         }
-        .sheet(isPresented: $showMediaPicker) {
-            // 弹出纯 SwiftUI 版选歌器，彻底告别闪退
-            CustomMusicPickerView { collection in
-                musicManager.playCollection(collection)
-            }
-        }
         .onAppear {
-            musicManager.setupAudioSession()
+            // 启动时检查权限
+            MPMediaLibrary.requestAuthorization { _ in }
         }
     }
 }
 
 // ==========================================
-// 2. 纯 SwiftUI 本地音乐选择器 (专治跨平台水土不服)
-// ==========================================
-struct CustomMusicPickerView: View {
-    var onSelect: (MPMediaItemCollection) -> Void
-    @Environment(\.presentationMode) var presentationMode
-    
-    @State private var songs: [MPMediaItem] = []
-    @State private var isLoading = true
-
-    var body: some View {
-        NavigationView {
-            Group {
-                if isLoading {
-                    ProgressView("加载本地音乐中...")
-                } else if songs.isEmpty {
-                    VStack(spacing: 20) {
-                        Image(systemName: "music.note.list")
-                            .font(.system(size: 50))
-                            .foregroundColor(.gray)
-                        Text("未在本地发现任何音乐\\n请前往 Apple Music 下载或同步歌曲")
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.gray)
-                    }
-                } else {
-                    List(songs, id: \.persistentID) { song in
-                        Button(action: {
-                            // 将选中的歌曲打包成播放集合
-                            let collection = MPMediaItemCollection(items: [song])
-                            onSelect(collection)
-                            presentationMode.wrappedValue.dismiss()
-                        }) {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(song.title ?? "未知歌曲")
-                                        .font(.headline)
-                                        .foregroundColor(.primary)
-                                        .lineLimit(1)
-                                    Text(song.artist ?? "未知歌手")
-                                        .font(.subheadline)
-                                        .foregroundColor(.gray)
-                                        .lineLimit(1)
-                                }
-                                Spacer()
-                                if let artwork = song.artwork, let image = artwork.image(at: CGSize(width: 45, height: 45)) {
-                                    Image(uiImage: image)
-                                        .resizable()
-                                        .frame(width: 45, height: 45)
-                                        .cornerRadius(8)
-                                } else {
-                                    Image(systemName: "music.note")
-                                        .frame(width: 45, height: 45)
-                                        .background(Color.gray.opacity(0.2))
-                                        .cornerRadius(8)
-                                        .foregroundColor(.gray)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("选择歌曲")
-            .navigationBarItems(trailing: Button("取消") {
-                presentationMode.wrappedValue.dismiss()
-            })
-            .onAppear {
-                loadMusicLibrary()
-            }
-        }
-    }
-
-    private func loadMusicLibrary() {
-        // 在后台线程加载音乐，防止卡顿
-        DispatchQueue.global(qos: .userInitiated).async {
-            let query = MPMediaQuery.songs()
-            let items = query.items ?? []
-            DispatchQueue.main.async {
-                self.songs = items
-                self.isLoading = false
-            }
-        }
-    }
-}
-
-// ==========================================
-// 3. 核心大心脏 (内置 applicationQueuePlayer 保活版)
+// 2. 核心大心脏 (系统播放器外部监听 + 纯静音混音保活版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
     
-    // 🚨 我们的内部专属播放器
-    private var musicPlayer = MPMusicPlayerController.applicationQueuePlayer
+    // 🚨 监控系统自带的 Apple Music
+    private var musicPlayer = MPMusicPlayerController.systemMusicPlayer
     private var currentActivity: Activity<TimerWidgetAttributes>? = nil
     
-    @Published var errorMessage: String = "等待选歌..."
+    @Published var errorMessage: String = "点击下方按钮启动监听"
     @Published var currentThemeColor: String = "#34C759"
     @Published var currentSongName: String = ""
     @Published var currentArtistName: String = ""
     @Published var currentDisplayLyric: String = ""
     @Published var isPlaying: Bool = false
+    @Published var isMonitoring: Bool = false
     
     private var parsedLyrics: [LyricLine] = []
     private var masterTimer: DispatchSourceTimer?
@@ -226,36 +133,90 @@ class MusicManager: ObservableObject {
     private var engineTickCount = 0
     private var lastUpdatedLyric = ""
     private var isFetchingLyrics = false 
+    
+    // 🚨 底层抗冻结时钟
+    private var inertialTime: TimeInterval = 0
+    private var lastKnownSystemTime: TimeInterval = -1
+    private var lastTickDate = Date()
+    
+    // 🚨 AVAudioEngine 纯静音保活引擎
+    private var audioEngine: AVAudioEngine?
+    private var playerNode: AVAudioPlayerNode?
 
-    func setupAudioSession() {
+    func startMonitoring() {
+        self.isMonitoring = true
+        self.errorMessage = "正在挂载底层静音引擎..."
+        self.engineTickCount = 0
+        
+        purgeOrphanedActivities()
+        setupSilentAudioEngine()
+        
+        MPMediaLibrary.requestAuthorization { status in
+            DispatchQueue.main.async {
+                if status == .authorized {
+                    self.startMasterLoop()
+                    self.errorMessage = "✅ 监听引擎启动成功"
+                } else {
+                    self.errorMessage = "❌ 请在系统设置中允许访问媒体与 Apple Music"
+                    self.isMonitoring = false
+                }
+            }
+        }
+    }
+    
+    // 🚨 核心黑科技：生成 0.0 绝对静音的音频流，且允许与其他 App（Apple Music）混音！
+    private func setupSilentAudioEngine() {
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [])
+            // 极其重要：.mixWithOthers 保证我们播放静音时，不会打断 Apple Music 的歌声
+            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try AVAudioSession.sharedInstance().setActive(true)
-            purgeOrphanedActivities()
+            
+            audioEngine = AVAudioEngine()
+            playerNode = AVAudioPlayerNode()
+            
+            guard let engine = audioEngine, let player = playerNode else { return }
+            
+            engine.attach(player)
+            let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+            engine.connect(player, to: engine.mainMixerNode, format: format)
+            
+            try engine.start()
+            
+            // 在内存中写一段完美的“无声波形” (全是 0.0)
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 44100)!
+            buffer.frameLength = 44100
+            if let channelData = buffer.floatChannelData {
+                for i in 0..<Int(buffer.frameLength) {
+                    channelData[0][i] = 0.0 // 绝对静音
+                }
+            }
+            
+            player.scheduleBuffer(buffer, at: nil, options: .loops, completionHandler: nil)
+            player.play()
+            
+            // 防御系统电话打断
+            NotificationCenter.default.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] notification in
+                guard let self = self,
+                      let userInfo = notification.userInfo,
+                      let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+                      let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
+                      
+                if type == .ended {
+                    try? AVAudioSession.sharedInstance().setActive(true)
+                    try? self.audioEngine?.start()
+                    self.playerNode?.play()
+                }
+            }
         } catch {
-            self.errorMessage = "音频会话初始化失败: \(error.localizedDescription)"
+            self.errorMessage = "音频保活引擎挂载失败: \(error.localizedDescription)"
         }
     }
-    
-    func playCollection(_ collection: MPMediaItemCollection) {
-        setupAudioSession()
-        musicPlayer.setQueue(with: collection)
-        musicPlayer.play()
-        self.isPlaying = true
-        startMasterLoop()
-    }
-    
+
+    // 控制 Apple Music
     func togglePlayPause() {
-        if musicPlayer.playbackState == .playing {
-            musicPlayer.pause()
-            self.isPlaying = false
-        } else {
-            setupAudioSession()
-            musicPlayer.play()
-            self.isPlaying = true
-        }
+        if musicPlayer.playbackState == .playing { musicPlayer.pause() } 
+        else { musicPlayer.play() }
     }
-    
     func playNext() { musicPlayer.skipToNextItem() }
     func playPrevious() { musicPlayer.skipToPreviousItem() }
 
@@ -270,23 +231,61 @@ class MusicManager: ObservableObject {
 
     private func startMasterLoop() {
         masterTimer?.cancel()
+        self.lastTickDate = Date()
+        self.inertialTime = 0
+        self.lastKnownSystemTime = -1
         
         let queue = DispatchQueue(label: "com.musicmanager.loop", qos: .userInteractive)
         let timer = DispatchSource.makeTimerSource(queue: queue)
-        timer.schedule(wallDeadline: .now(), repeating: 0.2)
+        timer.schedule(wallDeadline: .now(), repeating: 0.2) // 每秒 5 帧高频监听
         
         timer.setEventHandler { [weak self] in
             guard let self = self else { return }
             self.engineTickCount += 1
             
+            let now = Date()
+            let delta = now.timeIntervalSince(self.lastTickDate)
+            self.lastTickDate = now
+            
+            // 1. 读取 Apple Music 当前状态
             let rawTitle = self.musicPlayer.nowPlayingItem?.title ?? ""
             let artist = self.musicPlayer.nowPlayingItem?.artist ?? ""
             let systemTime = self.musicPlayer.currentPlaybackTime
-            let currentlyPlaying = (self.musicPlayer.playbackState == .playing)
+            
+            // 🚨 终极探测：在后台时 musicPlayer 的状态会卡死，必须通过 isOtherAudioPlaying 来判断 Apple Music 是否在发声
+            let isSystemPlaying = (self.musicPlayer.playbackState == .playing)
+            let isOtherPlaying = AVAudioSession.sharedInstance().isOtherAudioPlaying
+            let currentlyPlaying = isSystemPlaying || isOtherPlaying
             
             DispatchQueue.main.async { self.isPlaying = currentlyPlaying }
             
-            // 切歌监测
+            // 2. 底层锁相环抗冻结时钟 (解决退到后台拿不到真实进度的问题)
+            if !systemTime.isNaN {
+                let diff = abs(systemTime - self.lastKnownSystemTime)
+                if diff > 1.0 {
+                    // 时间发生大幅跳跃（比如切歌、用户拖动进度条，或者 App 刚回到前台刷新）
+                    self.inertialTime = systemTime
+                } else if currentlyPlaying {
+                    self.inertialTime += delta
+                    // 柔性同步，防止积累误差
+                    if diff > 0 && diff < 1.0 {
+                        self.inertialTime = (self.inertialTime * 0.8) + (systemTime * 0.2)
+                    }
+                }
+                self.lastKnownSystemTime = systemTime
+            } else if currentlyPlaying {
+                // 如果拿不到系统时间，纯靠惯性盲走
+                self.inertialTime += delta
+            }
+            
+            // 引擎防坠毁保护
+            if self.playerNode?.isPlaying == false {
+                try? AVAudioSession.sharedInstance().setActive(true)
+                try? self.audioEngine?.start()
+                self.playerNode?.play()
+            }
+            
+            // 3. 切歌监测
             if !rawTitle.isEmpty && rawTitle != self.currentSongName {
                 DispatchQueue.main.async {
                     self.currentSongName = rawTitle
@@ -296,6 +295,8 @@ class MusicManager: ObservableObject {
                 self.currentLyricIndex = -1
                 self.parsedLyrics = []
                 self.lastUpdatedLyric = ""
+                self.inertialTime = systemTime.isNaN ? 0 : systemTime
+                self.lastKnownSystemTime = self.inertialTime
                 
                 if let artwork = self.musicPlayer.nowPlayingItem?.artwork,
                    let image = artwork.image(at: CGSize(width: 50, height: 50)) {
@@ -330,10 +331,11 @@ class MusicManager: ObservableObject {
                 }
             }
             
-            // 歌词滚动推送
-            if currentlyPlaying && !systemTime.isNaN {
+            // 4. 歌词滚动推送
+            if currentlyPlaying {
                 if !self.parsedLyrics.isEmpty {
-                    let calculatedTime = systemTime + 0.3
+                    // 提前 0.3 秒，观感更好
+                    let calculatedTime = self.inertialTime + 0.3
                     var newIndex = -1
                     for (index, line) in self.parsedLyrics.enumerated() {
                         if calculatedTime >= line.time { newIndex = index } else { break }
@@ -344,6 +346,7 @@ class MusicManager: ObservableObject {
                         let currentText = self.parsedLyrics[newIndex].text
                         if !currentText.isEmpty {
                             DispatchQueue.main.async { self.currentDisplayLyric = currentText }
+                            // 极严苛的拦截：歌词没变化绝不发送更新请求，防止耗尽灵动岛预算
                             self.updateIsland(songName: self.currentSongName, lyric: currentText)
                         }
                     }
@@ -356,7 +359,8 @@ class MusicManager: ObservableObject {
             if self.engineTickCount % 10 == 0 {
                 DispatchQueue.main.async {
                     if !self.errorMessage.contains("失败") && !self.errorMessage.contains("错误") && !self.errorMessage.contains("❌") {
-                        self.errorMessage = "✅ 专属播放器运行中 | \(currentlyPlaying ? "▶️ 播放" : "⏸ 暂停")"
+                        let sec = Int(self.inertialTime)
+                        self.errorMessage = "✅ AM外部监听中 | 进度: \(sec)s | \(currentlyPlaying ? "▶️ 播放" : "⏸ 暂停")"
                     }
                 }
             }
@@ -366,6 +370,7 @@ class MusicManager: ObservableObject {
         self.masterTimer = timer
     }
 
+    // ========== 以下为歌词抓取模块 ==========
     private func downloadLyrics(title: String, artist: String) async -> [LyricLine] {
         var cleanTitle = title
         if let idx = cleanTitle.firstIndex(of: "(") { cleanTitle = String(cleanTitle[..<idx]) }
@@ -485,6 +490,7 @@ class MusicManager: ObservableObject {
     }
 
     func updateIsland(songName: String, lyric: String) {
+        // 🚨 严密拦截：文字不改变，绝不消耗系统更新预算！
         if lyric == lastUpdatedLyric { return }
         lastUpdatedLyric = lyric
 
@@ -499,7 +505,7 @@ class MusicManager: ObservableObject {
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
-                        let staleDate = Date().addingTimeInterval(300)
+                        let staleDate = Date().addingTimeInterval(3600) // 1小时不失效
                         let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                         currentActivity = try Activity.request(attributes: TimerWidgetAttributes(), content: content)
                     } else {
@@ -510,7 +516,7 @@ class MusicManager: ObservableObject {
                 }
             } else {
                 if #available(iOS 16.2, *) {
-                    let staleDate = Date().addingTimeInterval(300)
+                    let staleDate = Date().addingTimeInterval(3600)
                     let content = ActivityContent(state: state, staleDate: staleDate, relevanceScore: 100.0)
                     await currentActivity?.update(content)
                 } else {
@@ -518,6 +524,22 @@ class MusicManager: ObservableObject {
                 }
             }
         }
+    }
+    
+    func stopEverything() {
+        self.isMonitoring = false
+        masterTimer?.cancel()
+        playerNode?.stop()
+        audioEngine?.stop()
+        NotificationCenter.default.removeObserver(self)
+        
+        currentSongName = ""
+        currentArtistName = ""
+        currentDisplayLyric = ""
+        lastUpdatedLyric = ""
+        isPlaying = false
+        purgeOrphanedActivities() 
+        self.errorMessage = "监听已彻底停止"
     }
 }
 
