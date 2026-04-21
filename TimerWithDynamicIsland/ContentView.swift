@@ -22,11 +22,10 @@ struct ContentView: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 80, height: 80)
-                // 界面图标也跟着当前封面颜色变！
                 .foregroundColor(Color(hex: musicManager.currentThemeColor))
                 .shadow(color: Color(hex: musicManager.currentThemeColor).opacity(0.5), radius: 10)
             
-            Text(isMonitoring ? "智能幻彩引擎运行中" : "歌词同步已关闭")
+            Text(isMonitoring ? "防冻结幻彩引擎运行中" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -37,7 +36,7 @@ struct ContentView: View {
                     musicManager.stopEverything()
                 }
             }) {
-                Text(isMonitoring ? "🛑 彻底停止并关闭" : "🚀 开启幻彩同步")
+                Text(isMonitoring ? "🛑 彻底停止并关闭" : "🚀 开启不死同步")
                     .font(.title3.bold())
                     .padding()
                     .frame(maxWidth: .infinity)
@@ -60,7 +59,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 2. 核心大心脏 (MusicManager)
+// 2. 核心大心脏 (防僵尸 + 异步休眠防冻结版)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -69,31 +68,49 @@ class MusicManager: ObservableObject {
     private var currentActivity: Activity<TimerWidgetAttributes>? = nil
     
     @Published var errorMessage: String = ""
-    @Published var currentThemeColor: String = "#34C759" // 默认 iOS 绿
+    @Published var currentThemeColor: String = "#34C759"
     
     private var parsedLyrics: [LyricLine] = []
-    private var lyricTimer: Timer?
+    
+    // 🚨 废弃旧版 Timer，启用全新异步并发任务！
+    private var lyricSyncTask: Task<Void, Never>? 
     private var currentLyricIndex = -1
     private var currentSongName = ""
     
     private let silenceEngine = AVAudioEngine()
     private let silencePlayer = AVAudioPlayerNode()
-    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
+    // ------------------------------------------
+    // 启动与保活
+    // ------------------------------------------
     func setupMonitoring() {
-        self.errorMessage = "正在启动引擎..."
+        self.errorMessage = "正在启动防冻结引擎..."
+        
+        // 🚨 1. 启动时的第一件事：清剿所有僵尸灵动岛！
+        purgeOrphanedActivities()
+        
+        // 2. 启动静音保活引擎
         configureAudioSession()
-        renewBackgroundTask()
         
         MPMediaLibrary.requestAuthorization { status in
             DispatchQueue.main.async {
                 if status == .authorized {
-                    self.errorMessage = "✅ 监听中，退后台绝对不掉线！"
+                    self.errorMessage = "✅ 监听中，锁屏绝对不断流！"
                     self.startListening()
                 } else {
                     self.errorMessage = "❌ 被拒绝访问 Apple Music"
                 }
             }
+        }
+    }
+    
+    // 🚨 清剿残留灵动岛，确保永远只有一条通知
+    private func purgeOrphanedActivities() {
+        Task {
+            for activity in Activity<TimerWidgetAttributes>.activities {
+                await activity.end(dismissalPolicy: .immediate)
+            }
+            self.currentActivity = nil
         }
     }
     
@@ -114,13 +131,6 @@ class MusicManager: ObservableObject {
             }
         } catch { print("音频引擎故障") }
     }
-    
-    private func renewBackgroundTask() {
-        if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
-        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "LyricKeepAlive") {
-            self.renewBackgroundTask()
-        }
-    }
 
     private func startListening() {
         musicPlayer.beginGeneratingPlaybackNotifications()
@@ -138,7 +148,6 @@ class MusicManager: ObservableObject {
         let artist = musicPlayer.nowPlayingItem?.artist ?? ""
         let isPlaying = (musicPlayer.playbackState == .playing)
         
-        // 🚨 色彩提取：抓取当前音乐的封面并算出平均色！
         if let artwork = musicPlayer.nowPlayingItem?.artwork,
            let image = artwork.image(at: CGSize(width: 50, height: 50)) {
             self.currentThemeColor = image.averageColorHex() ?? "#34C759"
@@ -153,15 +162,15 @@ class MusicManager: ObservableObject {
         }
         
         if isPlaying {
-            if !parsedLyrics.isEmpty { startLyricSyncTimer(songName: rawTitle) }
+            if !parsedLyrics.isEmpty { startLyricSyncTask(songName: rawTitle) }
         } else {
-            lyricTimer?.invalidate()
+            lyricSyncTask?.cancel()
             if !rawTitle.isEmpty { updateIsland(songName: rawTitle, lyric: "⏸ 已暂停播放") }
         }
     }
 
     private func fetchAndStart(title: String, artist: String) {
-        lyricTimer?.invalidate()
+        lyricSyncTask?.cancel()
         parsedLyrics = []
         currentLyricIndex = -1
         updateIsland(songName: title, lyric: "🎵 秒速匹配中...")
@@ -182,35 +191,46 @@ class MusicManager: ObservableObject {
                     self.updateIsland(songName: title, lyric: "❌ 无滚动歌词")
                 } else {
                     if self.musicPlayer.playbackState == .playing {
-                        self.startLyricSyncTimer(songName: title)
+                        self.startLyricSyncTask(songName: title)
                     }
                 }
             }
         }
     }
 
-    func startLyricSyncTimer(songName: String) {
-        lyricTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
-            let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
-            if currentTime.isNaN { return }
-            
-            var newIndex = -1
-            for (index, line) in self.parsedLyrics.enumerated() {
-                if currentTime >= line.time { newIndex = index } else { break }
-            }
-            
-            if newIndex != self.currentLyricIndex && newIndex >= 0 {
-                self.currentLyricIndex = newIndex
-                let currentText = self.parsedLyrics[newIndex].text
-                if !currentText.isEmpty {
-                    self.updateIsland(songName: songName, lyric: currentText)
+    // ------------------------------------------
+    // 🚨 全新异步防冻结循环引擎 (核心升级)
+    // ------------------------------------------
+    func startLyricSyncTask(songName: String) {
+        // 先停掉旧任务
+        lyricSyncTask?.cancel()
+        
+        // 开启一个永久存活的异步并发任务
+        lyricSyncTask = Task {
+            // 只要任务没被取消，就无限循环
+            while !Task.isCancelled {
+                let currentTime = self.musicPlayer.currentPlaybackTime + 0.45 
+                
+                if !currentTime.isNaN {
+                    var newIndex = -1
+                    for (index, line) in self.parsedLyrics.enumerated() {
+                        if currentTime >= line.time { newIndex = index } else { break }
+                    }
+                    
+                    // 如果歌词变了，且系统没被取消，推送到灵动岛
+                    if newIndex != self.currentLyricIndex && newIndex >= 0 && !Task.isCancelled {
+                        self.currentLyricIndex = newIndex
+                        let currentText = self.parsedLyrics[newIndex].text
+                        if !currentText.isEmpty {
+                            self.updateIsland(songName: songName, lyric: currentText)
+                        }
+                    }
                 }
+                
+                // 🚨 替代 Timer：使用底层的非阻塞休眠，0.1秒唤醒一次。完美防冻结！
+                try? await Task.sleep(nanoseconds: 100_000_000) 
             }
         }
-        RunLoop.main.add(timer, forMode: .common)
-        self.lyricTimer = timer
     }
 
     func fetchLyricFromQQMusic(keyword: String) async -> String {
@@ -270,9 +290,15 @@ class MusicManager: ObservableObject {
     }
 
     func updateIsland(songName: String, lyric: String) {
-        // 🚨 将提取到的颜色打包发给灵动岛
         let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric, themeColorHex: currentThemeColor)
         Task {
+            // 🚨 严谨校验：如果失联了，尝试抓取并接管系统中现存的 Activity
+            if currentActivity == nil {
+                if let existing = Activity<TimerWidgetAttributes>.activities.first {
+                    self.currentActivity = existing
+                }
+            }
+            
             if currentActivity == nil {
                 do {
                     if #available(iOS 16.2, *) {
@@ -296,17 +322,18 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         NotificationCenter.default.removeObserver(self)
-        lyricTimer?.invalidate()
+        lyricSyncTask?.cancel()
+        
         if silenceEngine.isRunning { silencePlayer.stop(); silenceEngine.stop() }
-        if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
+        
         currentSongName = ""
-        Task { await currentActivity?.end(dismissalPolicy: .immediate); currentActivity = nil }
+        purgeOrphanedActivities() // 彻底停止时也清剿一遍
         self.errorMessage = "已彻底停止并关闭"
     }
 }
 
 // ==========================================
-// 🚨 UIImage 扩展：算法提取图片主色调为 Hex 字符串
+// 辅助颜色解码与萃取
 // ==========================================
 extension UIImage {
     func averageColorHex() -> String? {
@@ -319,11 +346,8 @@ extension UIImage {
         let context = CIContext(options: [.workingColorSpace: kCFNull!])
         context.render(outputImage, toBitmap: &bitmap, rowBytes: 4, bounds: CGRect(x: 0, y: 0, width: 1, height: 1), format: .RGBA8, colorSpace: nil)
         
-        // 过滤掉太暗的颜色，防止在黑色背景的锁屏上看不清
         let brightness = (Double(bitmap[0]) * 0.299 + Double(bitmap[1]) * 0.587 + Double(bitmap[2]) * 0.114)
-        if brightness < 50 {
-            return "#34C759" // 遇到极暗的封面，强制换成清晰的绿色
-        }
+        if brightness < 50 { return "#34C759" }
         return String(format: "#%02x%02x%02x", bitmap[0], bitmap[1], bitmap[2])
     }
 }
