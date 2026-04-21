@@ -9,7 +9,7 @@ struct LyricLine {
 }
 
 // ==========================================
-// UI 界面
+// UI 界面 (保持纯净毛玻璃效果)
 // ==========================================
 struct ContentView: View {
     @State private var isMonitoring = false
@@ -24,7 +24,7 @@ struct ContentView: View {
                 .foregroundColor(isMonitoring ? .green : .gray)
                 .shadow(color: isMonitoring ? .green.opacity(0.5) : .clear, radius: 10)
             
-            Text(isMonitoring ? "酷狗净水器引擎已启动" : "歌词同步已关闭")
+            Text(isMonitoring ? "防抖抗压引擎已启动" : "歌词同步已关闭")
                 .font(.headline)
 
             Button(action: {
@@ -58,7 +58,7 @@ struct ContentView: View {
 }
 
 // ==========================================
-// 核心引擎 (防撞车机制 + 满级权重)
+// 核心引擎 (防抖延迟 + 三级搜索降落伞)
 // ==========================================
 class MusicManager: ObservableObject {
     static let shared = MusicManager()
@@ -72,6 +72,9 @@ class MusicManager: ObservableObject {
     private var lyricTimer: Timer?
     private var currentLyricIndex = -1
     private var currentSongName = ""
+    
+    // 🚨 用于防抖的任务管理器
+    private var stateCheckTask: Task<Void, Never>?
 
     func setupMonitoring() {
         self.errorMessage = "正在请求权限..."
@@ -89,41 +92,65 @@ class MusicManager: ObservableObject {
     
     private func startListening() {
         musicPlayer.beginGeneratingPlaybackNotifications()
-        // 🚨 逻辑彻底分离：切歌只管切歌，暂停只管暂停
-        NotificationCenter.default.addObserver(self, selector: #selector(handleTrackChange), name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(handlePlaybackStateChange), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: nil)
-        handleTrackChange()
+        // 将所有通知都指向同一个处理函数，让防抖机制统一接管
+        NotificationCenter.default.addObserver(self, selector: #selector(systemDidReportChange), name: .MPMusicPlayerControllerNowPlayingItemDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(systemDidReportChange), name: .MPMusicPlayerControllerPlaybackStateDidChange, object: nil)
+        systemDidReportChange()
     }
     
-    // 专门处理暂停与恢复，绝不干涉搜歌词
-    @objc func handlePlaybackStateChange() {
-        if musicPlayer.playbackState == .paused || musicPlayer.playbackState == .stopped {
-            lyricTimer?.invalidate() // 掐断滚动
-            if !currentSongName.isEmpty {
-                updateIsland(songName: currentSongName, lyric: "⏸ 已暂停播放")
-            }
-        } else if musicPlayer.playbackState == .playing {
-            // 恢复播放时，如果歌词存在，直接继续滚动
-            if !parsedLyrics.isEmpty {
-                startLyricSyncTimer(songName: currentSongName)
+    // 🚨 核心抗压机制：防抖动 (Debounce)
+    @objc func systemDidReportChange() {
+        // 取消之前还在倒计时的任务
+        stateCheckTask?.cancel()
+        
+        // 开启一个新的任务，先睡 0.5 秒，让苹果系统的错乱状态飞一会儿
+        stateCheckTask = Task {
+            try? await Task.sleep(nanoseconds: 500_000_000) // 等待 0.5 秒
+            
+            // 如果在这 0.5 秒内又有人切歌了，这个任务就会被取消，直接退出
+            if Task.isCancelled { return }
+            
+            // 0.5秒后系统冷静了，我们再来进行精确判断
+            await MainActor.run {
+                self.evaluateRealState()
             }
         }
     }
 
-    // 专门处理切歌，绝不被暂停干扰
-    @objc func handleTrackChange() {
-        guard let nowPlaying = musicPlayer.nowPlayingItem else { return }
-        let rawTitle = nowPlaying.title ?? "未知歌名"
+    // 系统冷静后的真实状态判断
+    private func evaluateRealState() {
+        let isPlaying = (musicPlayer.playbackState == .playing)
+        let rawTitle = musicPlayer.nowPlayingItem?.title ?? ""
+        let artist = musicPlayer.nowPlayingItem?.artist ?? ""
         
-        // 防抖：同一首歌不要重复搜
-        if rawTitle == currentSongName && !parsedLyrics.isEmpty { return }
+        // 情况 1：真的暂停了
+        if !isPlaying {
+            lyricTimer?.invalidate()
+            if !currentSongName.isEmpty {
+                updateIsland(songName: currentSongName, lyric: "⏸ 已暂停播放")
+            }
+            return
+        }
+        
+        // 情况 2：没放歌
+        if rawTitle.isEmpty {
+            updateIsland(songName: "等待音乐...", lyric: "请播放音乐 🎵")
+            return
+        }
+        
+        // 情况 3：继续播放同一首歌（无需重新搜歌词，恢复滚动即可）
+        if rawTitle == currentSongName && !parsedLyrics.isEmpty {
+            startLyricSyncTimer(songName: rawTitle)
+            return
+        }
+        
+        // 情况 4：真的是切了新歌，开始全网搜词
         self.currentSongName = rawTitle
-        
         lyricTimer?.invalidate()
         parsedLyrics = []
         currentLyricIndex = -1
         
-        updateIsland(songName: rawTitle, lyric: "🎵 匹配歌词中...")
+        updateIsland(songName: rawTitle, lyric: "🎵 智能搜词中...")
         
         // 名字净化器
         var cleanTitle = rawTitle
@@ -131,22 +158,30 @@ class MusicManager: ObservableObject {
         if let idx = cleanTitle.firstIndex(of: "-") { cleanTitle = String(cleanTitle[..<idx]) }
         cleanTitle = cleanTitle.trimmingCharacters(in: .whitespaces)
         
-        let artist = nowPlaying.artist ?? ""
-        let searchKeyword = "\(cleanTitle) \(artist)".trimmingCharacters(in: .whitespaces)
-        
         Task {
-            let lrcString = await fetchLyricFromKugou(keyword: searchKeyword)
+            // 🚨 三级降落伞搜索机制
+            // 第一级：酷狗精准搜索（歌名+歌手）
+            var lrcString = await fetchLyricFromKugou(keyword: "\(cleanTitle) \(artist)")
+            
+            // 第二级：如果精准搜索失败，酷狗模糊搜索（仅歌名）
+            if lrcString.isEmpty {
+                lrcString = await fetchLyricFromKugou(keyword: cleanTitle)
+            }
+            
+            // 第三级：如果酷狗彻底歇菜，网易云保底搜索（歌名+歌手）
+            if lrcString.isEmpty {
+                lrcString = await fetchLyricFromNetEase(keyword: "\(cleanTitle) \(artist)")
+            }
+            
             self.parsedLyrics = self.parseLRC(lrcString: lrcString)
             
-            if self.parsedLyrics.isEmpty {
-                self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
-            } else {
-                DispatchQueue.main.async {
-                    // 如果搜到了，而且正在播放，就立刻开滚
+            DispatchQueue.main.async {
+                if self.parsedLyrics.isEmpty {
+                    self.updateIsland(songName: rawTitle, lyric: "❌ 无滚动歌词")
+                } else {
+                    // 如果此时还在播放，立刻开滚
                     if self.musicPlayer.playbackState == .playing {
                         self.startLyricSyncTimer(songName: rawTitle)
-                    } else {
-                        self.updateIsland(songName: rawTitle, lyric: "⏸ 歌词已就绪，等待播放")
                     }
                 }
             }
@@ -176,7 +211,7 @@ class MusicManager: ObservableObject {
     }
 
     // ==========================================
-    // 酷狗音乐 API (纯净返回 LRC)
+    // API 1：酷狗引擎 (主战武器)
     // ==========================================
     func fetchLyricFromKugou(keyword: String) async -> String {
         let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
@@ -195,6 +230,33 @@ class MusicManager: ObservableObject {
             let lyricUrl = URL(string: "https://m.kugou.com/app/i/krc.php?cmd=100&hash=\(hash)&timelength=999999")!
             let (lyricData, _) = try await URLSession.shared.data(from: lyricUrl)
             return String(data: lyricData, encoding: .utf8) ?? ""
+        } catch { return "" }
+    }
+    
+    // ==========================================
+    // API 2：网易云引擎 (备胎降落伞)
+    // ==========================================
+    func fetchLyricFromNetEase(keyword: String) async -> String {
+        let encoded = keyword.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? keyword
+        let searchUrl = URL(string: "https://music.163.com/api/search/get/web?s=\(encoded)&type=1&limit=1")!
+        
+        do {
+            var request = URLRequest(url: searchUrl)
+            request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            let (searchData, _) = try await URLSession.shared.data(for: request)
+            
+            guard let searchJson = try JSONSerialization.jsonObject(with: searchData) as? [String: Any],
+                  let result = searchJson["result"] as? [String: Any],
+                  let songs = result["songs"] as? [[String: Any]],
+                  let songId = songs.first?["id"] as? Int else { return "" }
+            
+            let lyricUrl = URL(string: "https://music.163.com/api/song/lyric?id=\(songId)&lv=1&kv=1&tv=-1")!
+            let (lyricData, _) = try await URLSession.shared.data(from: lyricUrl)
+            
+            guard let lyricJson = try JSONSerialization.jsonObject(with: lyricData) as? [String: Any],
+                  let lrc = lyricJson["lrc"] as? [String: Any],
+                  let lyricText = lrc["lyric"] as? String else { return "" }
+            return lyricText
         } catch { return "" }
     }
 
@@ -219,7 +281,6 @@ class MusicManager: ObservableObject {
         return lines.sorted { $0.time < $1.time }
     }
 
-    // 🚨 核心改动：使用 iOS 16.2+ API，强行将我们 App 的权重（relevanceScore）拉满！
     func updateIsland(songName: String, lyric: String) {
         let state = TimerWidgetAttributes.ContentState(songName: songName, lyric: lyric)
         
@@ -248,6 +309,7 @@ class MusicManager: ObservableObject {
     func stopEverything() {
         musicPlayer.endGeneratingPlaybackNotifications()
         NotificationCenter.default.removeObserver(self)
+        stateCheckTask?.cancel()
         lyricTimer?.invalidate()
         currentSongName = ""
         Task {
